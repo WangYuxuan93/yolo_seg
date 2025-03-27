@@ -65,7 +65,7 @@ def process_images(input_dir, output_dir, model):
                 mask_overlay[mask_resized > 0] = color  # 将该区域填充为指定颜色
 
                 # 将原图和掩码区域进行加权叠加，设置透明度
-                img = cv2.addWeighted(img, 0.7, mask_overlay, 0.3, 0)
+                img = cv2.addWeighted(img, 0.85, mask_overlay, 0.15, 0)
 
                 # 绘制掩码的边框（边框颜色与类别一致）
                 contours, _ = cv2.findContours(mask_resized, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -83,9 +83,9 @@ def process_images(input_dir, output_dir, model):
                 # 获取文本大小
                 (w, h), _ = cv2.getTextSize(class_name, cv2.FONT_HERSHEY_SIMPLEX, 1, 2)
                 # 绘制背景矩形
-                cv2.rectangle(img, (int(x_min), int(y_min) - h - 10), (int(x_min) + w, int(y_min)), bg_color, -1)
+                cv2.rectangle(img, (int(x_min), int(y_min) + h + 10), (int(x_min) + w, int(y_min)), bg_color, -1)
                 # 在矩形内绘制类别名称
-                cv2.putText(img, class_name, (int(x_min), int(y_min) - 5), cv2.FONT_HERSHEY_SIMPLEX, 1, text_color, 2, cv2.LINE_AA)
+                cv2.putText(img, class_name, (int(x_min), int(y_min) + h + 5), cv2.FONT_HERSHEY_SIMPLEX, 1, text_color, 2, cv2.LINE_AA)
 
                 # 将类别添加到检测到的类别集合中
                 detected_classes.add(class_name)
