@@ -2,14 +2,15 @@ from ultralytics import YOLO
 import matplotlib.pyplot as plt
 import cv2
 import numpy as np
+import sys
 
-filename = "00010.jpg"
+filename = sys.argv[1] #"example.png"
 # 加载YOLO模型
 #model = YOLO("yolo11n-seg.pt")  # 你可以替换为你的自定义模型路径
-model = YOLO("seg_train_layout_v0/train4/weights/best.pt")  # 加载自定义模型
+model = YOLO("outputs/layout-bs256-gpu8-v0/train2/weights/best.pt")  # 加载自定义模型
 
 # 对图片进行预测
-results = model("../layout/images/train/" + filename)  # 使用图像URL进行预测
+results = model("data/real_map/" + filename)  # 使用图像URL进行预测
 
 # 获取预测结果
 for result in results:
@@ -24,13 +25,12 @@ for result in results:
     print ("names:{}".format(names))
 
 # 读取图片
-img = cv2.imread("bus.jpg")
+img = cv2.imread("data/real_map/"+filename)
 
 # 定义颜色：为每个类别分配不同的颜色
 colors = {
     'main map': [255, 0, 0],
-    'legend': [0, 255, 0],
-    'stop sign': [0, 0, 255],  # 蓝色
+    'legend': [0, 0, 255],
     # 你可以根据需要添加其他类别及颜色
 }
 

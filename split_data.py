@@ -44,8 +44,8 @@ def split_data(input_dir, output_dir, train_size):
     print(f"Data split complete. Train size: {len(train_files)}, Val size: {len(val_files)}")
 
 # 示例用法
-input_directory = 'path/to/your/dataset'  # 替换为你的数据集路径
-output_directory = 'path/to/output'  # 替换为输出路径
-train_size = 1000  # 设置训练集大小（数量）
+input_directory = 'data/layout_origin'  # 替换为你的数据集路径
+output_directory = 'data/layout'  # 替换为输出路径
+train_size = 18811  # 设置训练集大小（数量）
 
 split_data(input_directory, output_directory, train_size)
