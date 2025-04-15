@@ -94,36 +94,31 @@ def main():
         'main map': (255, 0, 0),   # 红色
         'legend': (0, 0, 255),     # 蓝色
         'item': (0, 255, 0),
-        'compass': (0, 0, 0),
+        'compass': (0, 255, 255),
         'scale': (255, 255, 255),
         'title': (255, 255, 0)
         # 其他类别颜色也可加
     }
 
-    for folder_name in sorted(os.listdir(args.input_root)):
-        folder_path = os.path.join(args.input_root, folder_name)
-        if not os.path.isdir(folder_path) or not folder_name.isdigit():
+    folder_path = args.input_root
+    image_dir = os.path.join(folder_path, "image")
+    layout_dir = os.path.join(folder_path, "layout")
+
+    for filename in sorted(os.listdir(image_dir)):
+        print (filename)
+        if not filename.lower().endswith((".jpg", ".jpeg", ".png", ".tif", ".tiff")):
             continue
 
-        image_dir = os.path.join(folder_path, "image")
-        layout_dir = os.path.join(folder_path, "layout")
-        if not os.path.exists(image_dir) or not os.path.exists(layout_dir):
-            continue
+        image_path = os.path.join(image_dir, filename)
+        txt_name = os.path.splitext(filename)[0] + ".txt"
+        label_path = os.path.join(layout_dir, txt_name)
 
-        for filename in sorted(os.listdir(image_dir)):
-            if not filename.lower().endswith((".jpg", ".jpeg", ".png", ".tif", ".tiff")):
-                continue
-
-            image_path = os.path.join(image_dir, filename)
-            txt_name = os.path.splitext(filename)[0] + ".txt"
-            label_path = os.path.join(layout_dir, txt_name)
-
-            print(f"Previewing: {image_path}")
-            continue_display = visualize_on_image(image_path, label_path, class_colors, class_names)
-            if not continue_display:
-                print("Stopped.")
-                cv2.destroyAllWindows()
-                return
+        print(f"Previewing: {image_path}")
+        continue_display = visualize_on_image(image_path, label_path, class_colors, class_names)
+        if not continue_display:
+            print("Stopped.")
+            cv2.destroyAllWindows()
+            return
 
     cv2.destroyAllWindows()
 
