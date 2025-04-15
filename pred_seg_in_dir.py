@@ -13,6 +13,7 @@ def load_model():
     #return YOLO("outputs/layout-bs256-gpu8-v0/train2/weights/best.pt")  # 修改为你的模型路径
     return YOLO("../model/layout-bs256-gpu8-v0/best.pt")  # 修改为你的模型路径
 
+
 def predict_image_segmentation(image: np.ndarray, model_path: str, return_vis: bool = False):
     """
     对输入图像进行分割预测，返回分割轮廓坐标和可视化图像（可选）
@@ -34,19 +35,43 @@ def predict_image_segmentation(image: np.ndarray, model_path: str, return_vis: b
     results = model(image)
 
     predictions = []
-    vis_img = image.copy()
+    
+    # 直接使用BGR格式（无需转换为BGRA）
+    vis_img = image.copy()  # 创建图像副本进行修改
 
+    # 颜色映射关系
     colors = {
-        'main map': [255, 0, 0],
-        'legend': [0, 0, 255],
+        'main map': (255, 0, 0),   # 红色
+        'legend': (0, 0, 255),     # 蓝色
+        'item': (0, 255, 0),
+        'compass': (0, 255, 255),
+        'scale': (0, 0, 0),
+        'title': (255, 255, 0)
+        # 你可以根据需要添加其他类别及颜色
     }
 
-    for result in results:
+    # 定义类别优先级（数字越小，优先级越高）
+    priority = {
+        'main map': 0,    # 优先级最高
+        'legend': 1,      # 次之
+        'item': 2,
+        'compass': 3,
+        'scale': 4,
+        'title': 5
+    }
+
+    # 创建一个空白的掩码区域，用于所有目标的掩码合并
+    combined_mask = np.zeros_like(vis_img, dtype=np.uint8)
+
+    # 将结果按类别优先级排序
+    sorted_results = sorted(results, key=lambda x: priority.get(x.names[int(x.boxes.cls[0])], 6))
+
+    for result in sorted_results:
         for i, mask in enumerate(result.masks.data):
             class_id = int(result.boxes.cls[i])
             class_name = result.names[class_id]
             color = colors.get(class_name, np.random.randint(0, 255, 3).tolist())
-
+            
             mask_resized = cv2.resize(mask.cpu().numpy(), (w_img, h_img))
             mask_binary = np.uint8(mask_resized * 255)
 
@@ -65,16 +90,25 @@ def predict_image_segmentation(image: np.ndarray, model_path: str, return_vis: b
                 'points': points
             })
 
-            if return_vis:
-                # 可视化
-                cv2.drawContours(vis_img, [main_contour], -1, color, 2)
-                x, y, w, h = cv2.boundingRect(main_contour)
-                cv2.rectangle(vis_img, (x, y), (x + w, y + h), color, 2)
-                cv2.putText(vis_img, class_name, (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+            # 合并所有掩码区域
+            combined_mask[mask_resized > 0] = color  # 叠加掩码区域，保持类别颜色
+
+            # 绘制轮廓边框
+            cv2.drawContours(vis_img, [main_contour], -1, color, 2)
+
+            # 添加类别名称
+            x, y, w, h = cv2.boundingRect(main_contour)
+            cv2.putText(vis_img, class_name, (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+
+    # 合并掩码后进行加权叠加，设置透明度
+    if return_vis:
+        vis_img = cv2.addWeighted(vis_img, 0.9, combined_mask, 0.3, 0)  # 叠加所有掩码
 
     if return_vis:
         return predictions, vis_img
     return predictions
+
+
 
 def segment_map(image: np.ndarray, model_path: str="../model/layout-bs256-gpu8-v0/best.pt", return_vis: bool = False):
     """
@@ -195,7 +229,7 @@ def read_yolo_segmentation_file_to_pixel_coords(txt_path, image_width, image_hei
 def main():
     args = parse_args()
     #model = load_model()
-    model_path = "../model/layout-bs256-gpu8-v0/best.pt"
+    model_path = "../model/layout_all-bs256-gpu8-v1/best.pt"
     process_folders(args.input_root, model_path=model_path)
 
 if __name__ == "__main__":
