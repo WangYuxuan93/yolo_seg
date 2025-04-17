@@ -17,61 +17,53 @@ def load_model():
 def predict_image_segmentation(image: np.ndarray, model_path: str, return_vis: bool = False):
     """
     对输入图像进行分割预测，返回分割轮廓坐标和可视化图像（可选）
-
-    参数：
-        image (np.ndarray): 输入图像（BGR格式）
-        model (YOLO): 已加载的YOLO模型对象
-        return_vis (bool): 是否返回可视化图像
-
-    返回：
-        List[Dict]: 每个目标的预测信息：
-            - class_id (int)
-            - class_name (str)
-            - points: List of (x, y) tuples，轮廓像素坐标点
-        vis_img (np.ndarray, optional): 可视化图像（若 return_vis=True）
     """
     model = YOLO(model_path)
     h_img, w_img = image.shape[:2]
     results = model(image)
 
     predictions = []
-    
-    # 直接使用BGR格式（无需转换为BGRA）
-    vis_img = image.copy()  # 创建图像副本进行修改
+    vis_img = image.copy()
 
-    # 颜色映射关系
+    # 固定类别颜色
     colors = {
-        'main map': (255, 0, 0),   # 红色
-        'legend': (0, 0, 255),     # 蓝色
-        'item': (0, 255, 0),
+        'main map': (255, 0, 0),   # 红
+        'legend': (0, 0, 255),     # 蓝
+        'item': (0, 255, 0),       # 绿
         'compass': (0, 255, 255),
-        'scale': (0, 0, 0),
+        'scale': (255, 255, 255),
         'title': (255, 255, 0)
-        # 你可以根据需要添加其他类别及颜色
     }
 
-    # 定义类别优先级（数字越小，优先级越高）
+    # 类别优先级
     priority = {
-        'main map': 0,    # 优先级最高
-        'legend': 1,      # 次之
+        'main map': 0,
+        'legend': 1,
         'item': 2,
         'compass': 3,
         'scale': 4,
         'title': 5
     }
 
-    # 创建一个空白的掩码区域，用于所有目标的掩码合并
+    # 所有掩码合并后的颜色层
     combined_mask = np.zeros_like(vis_img, dtype=np.uint8)
 
-    # 将结果按类别优先级排序
-    sorted_results = sorted(results, key=lambda x: priority.get(x.names[int(x.boxes.cls[0])], 6))
+    for result in results:
+        if result.masks is None or result.boxes is None or len(result.boxes.cls) == 0:
+            continue  # 跳过无预测目标的图片
 
-    for result in sorted_results:
+        # 每个实例打包并排序
+        targets = []
         for i, mask in enumerate(result.masks.data):
             class_id = int(result.boxes.cls[i])
             class_name = result.names[class_id]
+            targets.append((priority.get(class_name, 6), i, class_id, class_name, mask))
+
+        # 排序：根据类别优先级
+        targets.sort(key=lambda x: x[0])
+
+        for _, i, class_id, class_name, mask in targets:
             color = colors.get(class_name, np.random.randint(0, 255, 3).tolist())
-            
             mask_resized = cv2.resize(mask.cpu().numpy(), (w_img, h_img))
             mask_binary = np.uint8(mask_resized * 255)
 
@@ -90,24 +82,21 @@ def predict_image_segmentation(image: np.ndarray, model_path: str, return_vis: b
                 'points': points
             })
 
-            # 合并所有掩码区域
-            combined_mask[mask_resized > 0] = color  # 叠加掩码区域，保持类别颜色
+            # 合并掩码到颜色图层（用于透明叠加）
+            combined_mask[mask_resized > 0] = color
 
-            # 绘制轮廓边框
+            # 画轮廓边框
             cv2.drawContours(vis_img, [main_contour], -1, color, 2)
 
-            # 添加类别名称
+            # 类别名称
             x, y, w, h = cv2.boundingRect(main_contour)
             cv2.putText(vis_img, class_name, (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
 
-    # 合并掩码后进行加权叠加，设置透明度
+    # 最后一次性进行透明颜色叠加
     if return_vis:
-        vis_img = cv2.addWeighted(vis_img, 0.9, combined_mask, 0.3, 0)  # 叠加所有掩码
+        vis_img = cv2.addWeighted(vis_img, 0.9, combined_mask, 0.3, 0)
 
-    if return_vis:
-        return predictions, vis_img
-    return predictions
-
+    return (predictions, vis_img) if return_vis else predictions
 
 
 def segment_map(image: np.ndarray, model_path: str="../model/layout-bs256-gpu8-v0/best.pt", return_vis: bool = False):
@@ -229,7 +218,8 @@ def read_yolo_segmentation_file_to_pixel_coords(txt_path, image_width, image_hei
 def main():
     args = parse_args()
     #model = load_model()
-    model_path = "../model/layout_all-bs256-gpu8-v1/best.pt"
+    #model_path = "../model/layout_all-bs256-gpu8-v1/best.pt"
+    model_path = "../model/layout_item-epoch10-bs256-gpu8-v0/best.pt"
     process_folders(args.input_root, model_path=model_path)
 
 if __name__ == "__main__":
