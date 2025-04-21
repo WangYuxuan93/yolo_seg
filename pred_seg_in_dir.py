@@ -4,10 +4,6 @@ import numpy as np
 import argparse
 from ultralytics import YOLO
 
-def parse_args():
-    parser = argparse.ArgumentParser(description="Segment map images and save YOLO-format results.")
-    parser.add_argument('--input_root', type=str, required=True, help="Root directory containing numbered subfolders with images")
-    return parser.parse_args()
 
 def load_model():
     #return YOLO("outputs/layout-bs256-gpu8-v0/train2/weights/best.pt")  # 修改为你的模型路径
@@ -27,9 +23,9 @@ def predict_image_segmentation(image: np.ndarray, model_path: str, return_vis: b
 
     # 固定类别颜色
     colors = {
-        'main map': (255, 0, 0),   # 红
+        'main map': (0, 255, 0),   # 红
         'legend': (0, 0, 255),     # 蓝
-        'item': (0, 255, 0),       # 绿
+        'item': (255, 0, 0),       # 绿
         'compass': (0, 255, 255),
         'scale': (255, 255, 255),
         'title': (255, 255, 0)
@@ -64,6 +60,7 @@ def predict_image_segmentation(image: np.ndarray, model_path: str, return_vis: b
 
         for _, i, class_id, class_name, mask in targets:
             color = colors.get(class_name, np.random.randint(0, 255, 3).tolist())
+            print (f"{class_name}:{color}", )
             mask_resized = cv2.resize(mask.cpu().numpy(), (w_img, h_img))
             mask_binary = np.uint8(mask_resized * 255)
 
@@ -122,9 +119,9 @@ def predict_image_segmentation_v2(image: np.ndarray, model_path: str, return_vis
 
     # 固定颜色
     colors = {
-        'main map': (255, 0, 0),
-        'legend': (0, 0, 255),
-        'item': (0, 255, 0),
+        'main map': (0, 255, 0),
+        'legend': (255, 0, 0),
+        'item': (0, 0, 255),
         'compass': (0, 255, 255),
         'scale': (255, 255, 255),
         'title': (255, 255, 0)
@@ -160,6 +157,7 @@ def predict_image_segmentation_v2(image: np.ndarray, model_path: str, return_vis
 
         for _, i, class_id, class_name, polygon in targets:
             color = colors.get(class_name, np.random.randint(0, 255, 3).tolist())
+            #print (f"{class_name}: {color}")
 
             # 储存点坐标
             points = [(int(x), int(y)) for x, y in polygon]
@@ -257,6 +255,61 @@ def process_folders(input_root, model_path):
                 f.write("\n".join(yolo_lines))
             print(f"Saved YOLO labels: {txt_path}")
 
+def process_folders_v2(input_root, model_path, output_dir):
+    os.makedirs(output_dir, exist_ok=True)
+
+    for folder_name in os.listdir(input_root):
+        folder_path = os.path.join(input_root, folder_name)
+        if not os.path.isdir(folder_path) or not folder_name.isdigit():
+            continue
+
+        image_dir = os.path.join(folder_path, "image")
+        if not os.path.exists(image_dir):
+            print(f"No 'image' folder in {folder_path}, skipping.")
+            continue
+
+        image_files = [f for f in os.listdir(image_dir) if f.lower().endswith(('png', 'jpg', 'jpeg', 'tif'))]
+        if not image_files:
+            print(f"No images found in {image_dir}, skipping.")
+            continue
+
+        for filename in image_files:
+            image_path = os.path.join(image_dir, filename)
+            img = cv2.imread(image_path)
+
+            if img is None:
+                print(f"Failed to read image {image_path}, skipping.")
+                continue
+
+            predictions, vis_img = predict_image_segmentation_v2(img, model_path=model_path, return_vis=True)
+
+            # 输出文件名前缀加上子文件夹名
+            file_stem = os.path.splitext(filename)[0]
+            prefix = f"{folder_name}_{file_stem}"
+
+            # 保存图像
+            masked_path = os.path.join(output_dir, f"masked_{prefix}.jpg")
+            cv2.imwrite(masked_path, vis_img)
+            print(f"Saved image: {masked_path}")
+
+            # 保存YOLO格式主轮廓标注
+            txt_path = os.path.join(output_dir, f"{prefix}.txt")
+            yolo_lines = []
+            h_img, w_img = img.shape[:2]
+            for pred in predictions:
+                class_id = pred['class_id']
+                norm_points = []
+                for x, y in pred['points']:
+                    x_norm = round(x / w_img, 6)
+                    y_norm = round(y / h_img, 6)
+                    norm_points.extend([x_norm, y_norm])
+                line = f"{class_id} " + " ".join(map(str, norm_points))
+                yolo_lines.append(line)
+
+            with open(txt_path, 'w') as f:
+                f.write("\n".join(yolo_lines))
+            print(f"Saved YOLO labels: {txt_path}")
+
 
 def read_yolo_segmentation_file_to_pixel_coords(txt_path, image_width, image_height):
     """
@@ -303,12 +356,15 @@ def read_yolo_segmentation_file_to_pixel_coords(txt_path, image_width, image_hei
     return objects
 
 
+
 def main():
-    args = parse_args()
-    #model = load_model()
-    #model_path = "../model/layout_all-bs256-gpu8-v1/best.pt"
+    parser = argparse.ArgumentParser(description="Segment map images and save YOLO-format results.")
+    parser.add_argument('--input_root', type=str, required=True, help="Root directory containing numbered subfolders with images")
+    parser.add_argument('--output_dir', type=str, required=True, help="Output directory for saving masks and labels")
+    args = parser.parse_args()
+
     model_path = "../model/layout_item-epoch10-bs256-gpu8-v0/best.pt"
-    process_folders(args.input_root, model_path=model_path)
+    process_folders_v2(args.input_root, model_path=model_path, output_dir=args.output_dir)
 
 if __name__ == "__main__":
     main()
