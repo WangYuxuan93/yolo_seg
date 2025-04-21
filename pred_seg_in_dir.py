@@ -98,6 +98,93 @@ def predict_image_segmentation(image: np.ndarray, model_path: str, return_vis: b
 
     return (predictions, vis_img) if return_vis else predictions
 
+def predict_image_segmentation_v2(image: np.ndarray, model_path: str, return_vis: bool = False):
+    """
+    对输入图像进行分割预测，返回分割轮廓坐标和可视化图像（可选）
+
+    参数：
+        image (np.ndarray): 输入图像（BGR格式）
+        model_path (str): YOLO 模型路径
+        return_vis (bool): 是否返回可视化图像
+
+    返回：
+        List[Dict]: 每个目标的预测信息，包括：
+            - class_id (int)
+            - class_name (str)
+            - points: List of (x, y) tuples（轮廓坐标）
+        vis_img (np.ndarray, optional): 可视化图像（若 return_vis=True）
+    """
+    model = YOLO(model_path)
+    results = model(image)
+
+    predictions = []
+    vis_img = image.copy()
+
+    # 固定颜色
+    colors = {
+        'main map': (255, 0, 0),
+        'legend': (0, 0, 255),
+        'item': (0, 255, 0),
+        'compass': (0, 255, 255),
+        'scale': (255, 255, 255),
+        'title': (255, 255, 0)
+    }
+
+    # 优先级
+    priority = {
+        'main map': 0,
+        'legend': 1,
+        'item': 2,
+        'compass': 3,
+        'scale': 4,
+        'title': 5
+    }
+
+    # 空白透明图层
+    combined_mask = np.zeros_like(vis_img, dtype=np.uint8)
+
+    for result in results:
+        if result.masks is None or result.boxes is None or len(result.boxes.cls) == 0:
+            continue
+
+        # 提取每个目标及其多边形
+        targets = []
+        for i in range(len(result.masks.xy)):
+            class_id = int(result.boxes.cls[i])
+            class_name = result.names[class_id]
+            polygon = result.masks.xy[i]  # Nx2 polygon
+            targets.append((priority.get(class_name, 6), i, class_id, class_name, polygon))
+
+        # 排序
+        targets.sort(key=lambda x: x[0])
+
+        for _, i, class_id, class_name, polygon in targets:
+            color = colors.get(class_name, np.random.randint(0, 255, 3).tolist())
+
+            # 储存点坐标
+            points = [(int(x), int(y)) for x, y in polygon]
+            predictions.append({
+                'class_id': class_id,
+                'class_name': class_name,
+                'points': points
+            })
+
+            # 生成掩码图层（填充区域）
+            cv2.fillPoly(combined_mask, [polygon.astype(np.int32)], color)
+
+            # 绘制轮廓边框
+            cv2.polylines(vis_img, [polygon.astype(np.int32)], isClosed=True, color=color, thickness=2)
+
+            # 添加文字
+            x, y, w, h = cv2.boundingRect(polygon.astype(np.int32))
+            cv2.putText(vis_img, class_name, (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+
+    # 所有掩码一次性透明叠加
+    if return_vis:
+        vis_img = cv2.addWeighted(vis_img, 0.9, combined_mask, 0.3, 0)
+
+    return (predictions, vis_img) if return_vis else predictions
+
 
 def segment_map(image: np.ndarray, model_path: str="../model/layout-bs256-gpu8-v0/best.pt", return_vis: bool = False):
     """
@@ -142,7 +229,8 @@ def process_folders(input_root, model_path):
                 continue
 
             # 调用封装好的 API 函数
-            predictions, vis_img = predict_image_segmentation(img, model_path=model_path, return_vis=True)
+            #predictions, vis_img = predict_image_segmentation(img, model_path=model_path, return_vis=True)
+            predictions, vis_img = predict_image_segmentation_v2(img, model_path=model_path, return_vis=True)
 
             # 保存可视化图像
             masked_path = os.path.join(layout_dir, f"masked_{filename}")

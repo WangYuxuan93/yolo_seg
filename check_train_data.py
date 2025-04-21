@@ -6,6 +6,7 @@ import argparse
 def parse_args():
     parser = argparse.ArgumentParser(description="Visualize YOLO segmentation results with class name labels.")
     parser.add_argument('--input_root', type=str, required=True, help="Root directory with numbered subfolders")
+    parser.add_argument('--save_vis', action='store_true', help="Save visualization images to a subfolder")
     return parser.parse_args()
 
 def read_yolo_segmentation_file_to_pixel_coords(txt_path, image_width, image_height):
@@ -40,7 +41,7 @@ def read_yolo_segmentation_file_to_pixel_coords(txt_path, image_width, image_hei
 
     return objects
 
-def visualize_on_image(image_path, label_path, class_colors, class_names):
+def visualize_on_image(image_path, label_path, class_colors, class_names, save_path=None):
     img = cv2.imread(image_path)
     if img is None:
         print(f"Failed to load image: {image_path}")
@@ -69,10 +70,17 @@ def visualize_on_image(image_path, label_path, class_colors, class_names):
         cv2.rectangle(img, (x_text, y_text - h_text), (x_text + w_text, y_text), color, -1)
         cv2.putText(img, class_name, (x_text, y_text - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2, cv2.LINE_AA)
 
-    cv2.imshow("Segmentation Preview", img)
-    key = cv2.waitKey(0)
-    if key == ord('q') or key == 27:
-        return False
+    # 保存图像（如有指定）
+    if save_path:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        cv2.imwrite(save_path, img)
+        print(f"Saved visualization to {save_path}")
+
+    # 显示图像
+    #cv2.imshow("Segmentation Preview", img)
+    #key = cv2.waitKey(0)
+    #if key == ord('q') or key == 27:
+    #    return False
     return True
 
 def main():
@@ -86,7 +94,6 @@ def main():
         3: 'compass',
         4: 'scale',
         5: 'title'
-        # 如果有更多类别，在这里加
     }
 
     # 类别颜色：class_name → BGR 颜色
@@ -97,24 +104,26 @@ def main():
         'compass': (0, 255, 255),
         'scale': (255, 255, 255),
         'title': (255, 255, 0)
-        # 其他类别颜色也可加
     }
 
     folder_path = args.input_root
     image_dir = os.path.join(folder_path, "image")
     layout_dir = os.path.join(folder_path, "layout")
+    save_dir = os.path.join(folder_path, "visualization") if args.save_vis else None
+    if save_dir:
+        os.makedirs(save_dir, exist_ok=True)
 
     for filename in sorted(os.listdir(image_dir)):
-        print (filename)
         if not filename.lower().endswith((".jpg", ".jpeg", ".png", ".tif", ".tiff")):
             continue
 
         image_path = os.path.join(image_dir, filename)
         txt_name = os.path.splitext(filename)[0] + ".txt"
         label_path = os.path.join(layout_dir, txt_name)
+        save_path = os.path.join(save_dir, filename) if save_dir else None
 
         print(f"Previewing: {image_path}")
-        continue_display = visualize_on_image(image_path, label_path, class_colors, class_names)
+        continue_display = visualize_on_image(image_path, label_path, class_colors, class_names, save_path=save_path)
         if not continue_display:
             print("Stopped.")
             cv2.destroyAllWindows()
