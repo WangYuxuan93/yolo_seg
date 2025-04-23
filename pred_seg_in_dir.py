@@ -95,7 +95,7 @@ def predict_image_segmentation(image: np.ndarray, model_path: str, return_vis: b
 
     return (predictions, vis_img) if return_vis else predictions
 
-def predict_image_segmentation_v2(image: np.ndarray, model_path: str, return_vis: bool = False):
+def predict_image_segmentation_v2(image: np.ndarray, model_path: str, return_vis: bool = False, use_bbox: bool = False):
     """
     对输入图像进行分割预测，返回分割轮廓坐标和可视化图像（可选）
 
@@ -103,6 +103,7 @@ def predict_image_segmentation_v2(image: np.ndarray, model_path: str, return_vis
         image (np.ndarray): 输入图像（BGR格式）
         model_path (str): YOLO 模型路径
         return_vis (bool): 是否返回可视化图像
+        use_bbox (bool): 是否使用最小包围矩形替代原始多边形
 
     返回：
         List[Dict]: 每个目标的预测信息，包括：
@@ -111,6 +112,7 @@ def predict_image_segmentation_v2(image: np.ndarray, model_path: str, return_vis
             - points: List of (x, y) tuples（轮廓坐标）
         vis_img (np.ndarray, optional): 可视化图像（若 return_vis=True）
     """
+
     model = YOLO(model_path)
     results = model(image)
 
@@ -156,11 +158,22 @@ def predict_image_segmentation_v2(image: np.ndarray, model_path: str, return_vis
         targets.sort(key=lambda x: x[0])
 
         for _, i, class_id, class_name, polygon in targets:
-            color = colors.get(class_name, np.random.randint(0, 255, 3).tolist())
-            #print (f"{class_name}: {color}")
+            color = colors.get(class_name, tuple(np.random.randint(0, 255, 3).tolist()))
 
-            # 储存点坐标
-            points = [(int(x), int(y)) for x, y in polygon]
+            if use_bbox:
+                x, y, w, h = cv2.boundingRect(polygon.astype(np.int32))
+                box_points = [
+                    (x, y),
+                    (x + w, y),
+                    (x + w, y + h),
+                    (x, y + h)
+                ]
+                points = box_points
+                polygon_draw = np.array(box_points, dtype=np.int32)
+            else:
+                points = [(int(x), int(y)) for x, y in polygon]
+                polygon_draw = polygon.astype(np.int32)
+
             predictions.append({
                 'class_id': class_id,
                 'class_name': class_name,
@@ -168,13 +181,13 @@ def predict_image_segmentation_v2(image: np.ndarray, model_path: str, return_vis
             })
 
             # 生成掩码图层（填充区域）
-            cv2.fillPoly(combined_mask, [polygon.astype(np.int32)], color)
+            cv2.fillPoly(combined_mask, [polygon_draw], color)
 
             # 绘制轮廓边框
-            cv2.polylines(vis_img, [polygon.astype(np.int32)], isClosed=True, color=color, thickness=2)
+            cv2.polylines(vis_img, [polygon_draw], isClosed=True, color=color, thickness=2)
 
             # 添加文字
-            x, y, w, h = cv2.boundingRect(polygon.astype(np.int32))
+            x, y, w, h = cv2.boundingRect(polygon_draw)
             cv2.putText(vis_img, class_name, (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
 
     # 所有掩码一次性透明叠加
@@ -199,7 +212,7 @@ def segment_map(image: np.ndarray, model_path: str="../model/layout-bs256-gpu8-v
     """
     return predict_image_segmentation(image, model_path=model_path, return_vis=return_vis)
 
-def process_folders(input_root, model_path):
+def process_folders(input_root, model_path, use_bbox=True):
     for folder_name in os.listdir(input_root):
         folder_path = os.path.join(input_root, folder_name)
         if not os.path.isdir(folder_path) or not folder_name.isdigit():
@@ -228,7 +241,7 @@ def process_folders(input_root, model_path):
 
             # 调用封装好的 API 函数
             #predictions, vis_img = predict_image_segmentation(img, model_path=model_path, return_vis=True)
-            predictions, vis_img = predict_image_segmentation_v2(img, model_path=model_path, return_vis=True)
+            predictions, vis_img = predict_image_segmentation_v2(img, model_path=model_path, return_vis=True, use_bbox=use_bbox)
 
             # 保存可视化图像
             masked_path = os.path.join(layout_dir, f"masked_{filename}")
@@ -255,7 +268,7 @@ def process_folders(input_root, model_path):
                 f.write("\n".join(yolo_lines))
             print(f"Saved YOLO labels: {txt_path}")
 
-def process_folders_v2(input_root, model_path, output_dir):
+def process_folders_v2(input_root, model_path, output_dir, use_bbox=True):
     os.makedirs(output_dir, exist_ok=True)
 
     for folder_name in os.listdir(input_root):
@@ -281,7 +294,7 @@ def process_folders_v2(input_root, model_path, output_dir):
                 print(f"Failed to read image {image_path}, skipping.")
                 continue
 
-            predictions, vis_img = predict_image_segmentation_v2(img, model_path=model_path, return_vis=True)
+            predictions, vis_img = predict_image_segmentation_v2(img, model_path=model_path, return_vis=True, use_bbox=use_bbox)
 
             # 输出文件名前缀加上子文件夹名
             file_stem = os.path.splitext(filename)[0]
@@ -361,10 +374,11 @@ def main():
     parser = argparse.ArgumentParser(description="Segment map images and save YOLO-format results.")
     parser.add_argument('--input_root', type=str, required=True, help="Root directory containing numbered subfolders with images")
     parser.add_argument('--output_dir', type=str, required=True, help="Output directory for saving masks and labels")
+    parser.add_argument('--use_bbox', action='store_true', help="If set, convert masks to minimal bounding boxes")
     args = parser.parse_args()
 
     model_path = "../model/layout_item-epoch10-bs256-gpu8-v0/best.pt"
-    process_folders_v2(args.input_root, model_path=model_path, output_dir=args.output_dir)
+    process_folders_v2(args.input_root, model_path=model_path, output_dir=args.output_dir, use_bbox=args.use_bbox)
 
 if __name__ == "__main__":
     main()
