@@ -114,8 +114,8 @@ def refine_box_with_opencv_v2(cropped_region: np.ndarray, return_polygon: bool =
 
     # 判断是否近似为四边形
     approx = cv2.approxPolyDP(best_cnt, epsilon=2.0, closed=True)
-    if len(approx) != 4:
-        return []  # ❌ 非矩形
+    #if len(approx) != 4:
+    #    return []  # ❌ 非矩形
 
     if return_polygon:
         return [(int(pt[0][0]), int(pt[0][1])) for pt in approx]
@@ -128,6 +128,56 @@ def refine_box_with_opencv_v2(cropped_region: np.ndarray, return_polygon: bool =
             (x, y + h)
         ]
 
+def visualize_boxes(image, x, y, w, h, refined, refined2=None, expand_bbox_px=0, output_dir="output"):
+    """
+    可视化：绘制原始框，第一次尝试扩张框，第二次尝试框（如果有）。
+    将可视化的图像保存到文件夹。
+    """
+    # 计算扩展后的框的坐标，第一次尝试
+    if expand_bbox_px > 0:
+        x1 = max(0, x - expand_bbox_px)
+        y1 = max(0, y - expand_bbox_px)
+        x2 = min(image.shape[1] - 1, x + w + expand_bbox_px)
+        y2 = min(image.shape[0] - 1, y + h + expand_bbox_px)
+    else:
+        # 第二次尝试时，不扩展，使用原始框的坐标
+        x1, y1, x2, y2 = x, y, x + w, y + h
+
+    # 创建一个与原图大小相同的透明图层
+    vis_img = image.copy()
+    overlay = np.zeros_like(vis_img, dtype=np.uint8)
+
+    # 绘制原始框（红色，透明）
+    cv2.rectangle(overlay, (x, y), (x + w, y + h), (0, 0, 255), 2)  # 红色框
+
+    # 绘制第一次尝试的扩张框（蓝色，透明）
+    if refined:
+        # 加上偏移量（x1, y1）将 refined 坐标放回原图位置
+        x_ref, y_ref, w_ref, h_ref = cv2.boundingRect(np.array(refined))
+        x_ref += x1  # 加上偏移量 x1
+        y_ref += y1  # 加上偏移量 y1
+        cv2.rectangle(overlay, (x_ref, y_ref), (x_ref + w_ref, y_ref + h_ref), (255, 0, 0), 2)  # 蓝色框
+
+    # 绘制第二次尝试的框（绿色，透明）
+    if refined2:
+        # 获取最小矩形框并加上偏移量
+        x_ref2, y_ref2, w_ref2, h_ref2 = cv2.boundingRect(np.array(refined2))
+        x_ref2 += x  # 对于第二次尝试，直接用原始的 x, y 作为偏移量
+        y_ref2 += y  # 对于第二次尝试，直接用原始的 y, y 作为偏移量
+        cv2.rectangle(overlay, (x_ref2, y_ref2), (x_ref2 + w_ref2, y_ref2 + h_ref2), (0, 255, 0), 2)  # 绿色框
+
+    # 叠加透明效果：cv2.addWeighted() 用于将 overlay 叠加到原图上
+    vis_img = cv2.addWeighted(vis_img, 0.6, overlay, 0.8, 0)  # 0.8 为透明度，值越小越透明
+
+    # 确保输出目录存在
+    os.makedirs(output_dir, exist_ok=True)
+
+    # 保存图像
+    output_file = os.path.join(output_dir, f"visualized_{x}_{y}_{w}_{h}.jpg")
+    cv2.imwrite(output_file, vis_img)
+    print(f"Saved visualized image to {output_file}")
+
+
 
 
 def predict_image_segmentation(image: np.ndarray, model_path: str,
@@ -135,7 +185,8 @@ def predict_image_segmentation(image: np.ndarray, model_path: str,
                                    use_bbox: bool = True,
                                    refine_boxes: bool = True,
                                    expand_bbox_px: int = 10,
-                                   min_refined_area_ratio: float = 0.2):
+                                   min_refined_area_ratio: float = 0.2,
+                                   debug=False):
     model = YOLO(model_path)
     results = model(image)
     predictions = []
@@ -197,10 +248,14 @@ def predict_image_segmentation(image: np.ndarray, model_path: str,
                     x2 = min(w_img - 1, x + w + expand)
                     y2 = min(h_img - 1, y + h + expand)
                     cropped = image[y1:y2, x1:x2]
-                    refined = refine_box_with_opencv(cropped, return_polygon=False)
+                    refined = refine_box_with_opencv_v2(cropped, return_polygon=True)
+
+                    if debug:
+                        # 可视化框：红色框（原始框）、蓝色框（第一次扩张框）
+                        visualize_boxes(image, x, y, w, h, refined, expand_bbox_px=expand_bbox_px, output_dir="visualizations")
 
                     def is_valid_refine(ref_pts):
-                        if not ref_pts or len(ref_pts) != 4:
+                        if not ref_pts:
                             return False
                         x_ref = [pt[0] for pt in ref_pts]
                         y_ref = [pt[1] for pt in ref_pts]
@@ -210,32 +265,53 @@ def predict_image_segmentation(image: np.ndarray, model_path: str,
                         orig_area = w * h
                         return refined_area >= min_refined_area_ratio * orig_area
 
-                    if is_valid_refine(refined):
-                        points = [(px + x1, py + y1) for (px, py) in refined]
-                    elif expand_bbox_px > 0:
-                        # 第二次尝试：不扩张
-                        x1_, y1_, x2_, y2_ = x, y, x + w, y + h
-                        cropped2 = image[y1_:y2_, x1_:x2_]
-                        refined2 = refine_box_with_opencv(cropped2, return_polygon=False)
-                        if is_valid_refine(refined2):
-                            points = [(px + x1_, py + y1_) for (px, py) in refined2]
+                    # 第一次尝试：扩张后的结果
+                    if len(refined) == 4 and is_valid_refine(refined):
+                        # 如果是矩形且面积合适
+                        # 使用 boundingRect 确保框与图像边平行
+                        x_ref, y_ref, w_ref, h_ref = cv2.boundingRect(np.array(refined))
+                        refined_rect = [(x_ref, y_ref), (x_ref + w_ref, y_ref), (x_ref + w_ref, y_ref + h_ref), (x_ref, y_ref + h_ref)]
+                        
+                        points = [(px + x1, py + y1) for (px, py) in refined_rect]  # 加上偏移量
+                    else:
+                        # 如果第一次尝试失败（不是矩形或面积不符合要求）
+                        if expand_bbox_px > 0:
+                            # 第二次尝试：不扩张
+                            x1_, y1_, x2_, y2_ = x, y, x + w, y + h
+                            cropped2 = image[y1_:y2_, x1_:x2_]
+                            refined2 = refine_box_with_opencv_v2(cropped2, return_polygon=True)
+
+                            if debug:
+                                # 可视化第二次尝试的修正框（绿色框）
+                                visualize_boxes(image, x, y, w, h, refined, refined2, expand_bbox_px=expand_bbox_px, output_dir="visualizations")
+
+                            # 第二次尝试：即使不是矩形，也强制用 cv2.boundingRect 生成矩形
+                            if is_valid_refine(refined2):
+                                # 计算第二次尝试的最小矩形框
+                                x_min, y_min, w_min, h_min = cv2.boundingRect(np.array(refined2))
+                                points = [
+                                    (x_min + x, y_min + y),  # 加上偏移量
+                                    (x_min + w_min + x, y_min + y),
+                                    (x_min + w_min + x, y_min + h_min + y),
+                                    (x_min + x, y_min + h_min + y)
+                                ]
+                            else:
+                                points = [
+                                    (x, y),
+                                    (x + w, y),
+                                    (x + w, y + h),
+                                    (x, y + h)
+                                ]
                         else:
+                            # 如果两次都失败 → 回退原框
                             points = [
                                 (x, y),
                                 (x + w, y),
                                 (x + w, y + h),
                                 (x, y + h)
                             ]
-                    else:
-                        # 两次都失败 → 回退原框
-                        points = [
-                            (x, y),
-                            (x + w, y),
-                            (x + w, y + h),
-                            (x, y + h)
-                        ]
 
-                    polygon_draw = np.array(points, dtype=np.int32)
+                polygon_draw = np.array(points, dtype=np.int32)
             else:
                 points = [(int(x), int(y)) for x, y in polygon]
                 polygon_draw = polygon.astype(np.int32)
