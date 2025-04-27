@@ -182,7 +182,10 @@ def visualize_boxes(image, x, y, w, h, refined, refined2=None, expand_bbox_px=0,
 
 def predict_image_segmentation(image: np.ndarray, model_path: str,
                                return_vis: bool = False,
-                               debug=False, smooth_contours: bool = True, epsilon_factor: float = 0.02):
+                               debug: bool = False,
+                               smooth_contours: bool = True,
+                               epsilon_factor: float = 0.02,
+                               merge_same_class_boxes: bool = False):
     model = YOLO(model_path)
     results = model(image)
     predictions = []
@@ -209,6 +212,8 @@ def predict_image_segmentation(image: np.ndarray, model_path: str,
     h_img, w_img = image.shape[:2]
     combined_mask = np.zeros_like(vis_img, dtype=np.uint8)
 
+    class_polygons = {}
+
     for result in results:
         if result.masks is None or result.boxes is None or len(result.boxes.cls) == 0:
             continue
@@ -223,32 +228,58 @@ def predict_image_segmentation(image: np.ndarray, model_path: str,
         targets.sort(key=lambda x: x[0])
 
         for _, i, class_id, class_name, polygon in targets:
-            color = colors.get(class_name, tuple(np.random.randint(0, 255, 3).tolist()))
+            if class_name not in class_polygons:
+                class_polygons[class_name] = []
+            class_polygons[class_name].append((class_id, polygon))
 
-            if smooth_contours:
-                # --- 凸包 + 平滑 ---
-                points_array = polygon.astype(np.int32)
-                hull = cv2.convexHull(points_array)
-                arc_length = cv2.arcLength(hull, closed=True)
-                epsilon = epsilon_factor * arc_length
-                approx = cv2.approxPolyDP(hull, epsilon=epsilon, closed=True)
-                points = [(int(pt[0][0]), int(pt[0][1])) for pt in approx]
-                polygon_draw = approx
-            else:
-                # --- 不处理顺序、直接绘制原始 polygon ---
-                points = [(int(x), int(y)) for x, y in polygon]
-                polygon_draw = np.array(points, dtype=np.int32)
+    # --- 合并同类目标（如果启用） ---
+    merged_targets = []
 
-            predictions.append({
-                'class_id': class_id,
-                'class_name': class_name,
-                'points': points
-            })
+    for class_name, instances in class_polygons.items():
+        if merge_same_class_boxes and len(instances) > 1:
+            # 创建一个mask，叠加所有实例
+            class_mask = np.zeros((h_img, w_img), dtype=np.uint8)
+            for _, polygon in instances:
+                pts = polygon.astype(np.int32)
+                cv2.fillPoly(class_mask, [pts], 255)
 
-            cv2.fillPoly(combined_mask, [polygon_draw], color)
-            cv2.polylines(vis_img, [polygon_draw], isClosed=True, color=color, thickness=2)
-            x_text, y_text, _, _ = cv2.boundingRect(polygon_draw)
-            cv2.putText(vis_img, class_name, (x_text, y_text - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+            # 找到叠加后的整体轮廓
+            contours, _ = cv2.findContours(class_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            for contour in contours:
+                if contour.shape[1] == 1:
+                    contour = contour.squeeze(1)  # 确保是 (N, 2)
+                merged_targets.append((instances[0][0], class_name, contour))
+        else:
+            # 不合并，原样保存
+            for class_id, polygon in instances:
+                pts = polygon.astype(np.int32)
+                merged_targets.append((class_id, class_name, pts))
+
+    # --- 绘制和记录结果 ---
+    for class_id, class_name, polygon in merged_targets:
+        color = colors.get(class_name, tuple(np.random.randint(0, 255, 3).tolist()))
+
+        if smooth_contours:
+            hull = cv2.convexHull(polygon)
+            arc_length = cv2.arcLength(hull, closed=True)
+            epsilon = epsilon_factor * arc_length
+            approx = cv2.approxPolyDP(hull, epsilon=epsilon, closed=True)
+            points = [(int(pt[0][0]), int(pt[0][1])) for pt in approx]
+            polygon_draw = approx
+        else:
+            points = [(int(x), int(y)) for x, y in polygon]
+            polygon_draw = polygon.reshape(-1, 1, 2)
+
+        predictions.append({
+            'class_id': class_id,
+            'class_name': class_name,
+            'points': points
+        })
+
+        cv2.fillPoly(combined_mask, [polygon_draw], color)
+        cv2.polylines(vis_img, [polygon_draw], isClosed=True, color=color, thickness=2)
+        x_text, y_text, _, _ = cv2.boundingRect(polygon_draw)
+        cv2.putText(vis_img, class_name, (x_text, y_text - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
 
     if return_vis:
         vis_img = cv2.addWeighted(vis_img, 0.9, combined_mask, 0.3, 0)
@@ -328,7 +359,7 @@ def process_folders(input_root, model_path, use_bbox=True):
             print(f"Saved YOLO labels: {txt_path}")
 
 
-def process_folders_to_ouput_dir(input_root, model_path, output_dir, use_opencv=False, smooth_contours=True, epsilon_factor=0.02):
+def process_folders_to_ouput_dir(input_root, model_path, output_dir, use_opencv=False, smooth_contours=True, epsilon_factor=0.02, merge_same_class_boxes=True):
     os.makedirs(output_dir, exist_ok=True)
 
     for folder_name in os.listdir(input_root):
@@ -363,7 +394,8 @@ def process_folders_to_ouput_dir(input_root, model_path, output_dir, use_opencv=
                     model_path=model_path,
                     return_vis=True,
                     smooth_contours=smooth_contours, 
-                    epsilon_factor=epsilon_factor
+                    epsilon_factor=epsilon_factor,
+                    merge_same_class_boxes=merge_same_class_boxes
                 )
 
             prefix = f"{folder_name}_{os.path.splitext(filename)[0]}"
@@ -443,6 +475,7 @@ def main():
     parser.add_argument('--use_opencv', action='store_true', help="Use OpenCV instead of YOLO for segmentation")
     parser.add_argument('--smooth_contours', action='store_true', help="smooth contours")
     parser.add_argument('--epsilon_factor', type=float, default=0.02, help="epsilon factor for smooth contours")
+    parser.add_argument('--merge_same_class_boxes', action='store_true', help="whether to merge same class boxes")
 
     args = parser.parse_args()
 
@@ -452,7 +485,8 @@ def main():
         output_dir=args.output_dir,
         use_opencv=args.use_opencv,
         smooth_contours=args.smooth_contours, 
-        epsilon_factor=args.epsilon_factor
+        epsilon_factor=args.epsilon_factor,
+        merge_same_class_boxes=args.merge_same_class_boxes
     )
 if __name__ == "__main__":
     main()
