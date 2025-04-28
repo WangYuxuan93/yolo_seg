@@ -132,7 +132,7 @@ def obtain_legend_rectangle_bbox(main_img, legend_area, area_min_factor=0.01, ar
             x, y, w, h = cv2.boundingRect(approx)
             aspect_ratio = w / h
             item_area = w * h
-            print (f"{legend_area}:{item_area}")
+            #print (f"{legend_area}:{item_area}")
             if (1 <= aspect_ratio <= 2.5) and (legend_area * area_min_factor <= item_area <= legend_area * area_max_factor):
             #if (1 <= aspect_ratio <= 2.5):
                 rectangles.append([x, y, x + w, y + h, 1.0])
@@ -159,7 +159,6 @@ def process_image(image_path, output_image_path, output_txt_path, model_path, ar
     predictions = predict_image_segmentation(main_img, model_path=model_path, smooth_contours=False,
                                               epsilon_factor=0.002,
                                               merge_same_class_boxes=False)
-
     all_boxes = []
     found_legend = False
     legend_counter = 0  # 用于编号
@@ -185,6 +184,9 @@ def process_image(image_path, output_image_path, output_txt_path, model_path, ar
                 raise ValueError("膨胀后的mask没有找到任何轮廓")
 
             expanded_pts = max(contours, key=cv2.contourArea)
+            
+            legend_area = cv2.contourArea(expanded_pts)
+            #print (f"expanded_pts: {expanded_pts}\nlegend_area: {legend_area}")
 
             # --- 画扩展后的legend多边形（紫色） ---
             cv2.polylines(vis_img, [expanded_pts], isClosed=True, color=(255, 0, 255), thickness=3)
@@ -198,7 +200,7 @@ def process_image(image_path, output_image_path, output_txt_path, model_path, ar
             legend_crop = legend_crop[y:y+h, x:x+w]
             cropped_mask = expanded_mask[y:y+h, x:y+h]
 
-            legend_area = cv2.countNonZero(cropped_mask)
+            #legend_area = w * h
 
             legend_counter += 1  # 增加图例编号
 
