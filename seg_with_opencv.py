@@ -107,13 +107,18 @@ def predict_image_segmentation(image: np.ndarray, model_path: str,
     return (predictions, vis_img) if return_vis else predictions
 
 
-def obtain_legend_rectangle_bbox(main_img, legend_area, area_factor=0.01):
+def obtain_legend_rectangle_bbox(main_img, legend_area, area_min_factor=0.01, area_max_factor=0.5, binary_image_filename=None):
     target_img = np.array(main_img)
     target_img = cv2.cvtColor(target_img, cv2.COLOR_BGR2GRAY)
 
     blur = cv2.GaussianBlur(target_img, (5, 5), 0)
     thresh = cv2.adaptiveThreshold(blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                   cv2.THRESH_BINARY_INV, 11, 2)
+                                   cv2.THRESH_BINARY_INV, 5, 1)
+
+    # 保存二值化图像到传入的路径
+    if binary_image_filename is not None:
+        cv2.imwrite(binary_image_filename, thresh)  # 保存二值化图像
+        print(f"二值化图已保存为 {binary_image_filename}")
 
     contours, _ = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
 
@@ -123,17 +128,25 @@ def obtain_legend_rectangle_bbox(main_img, legend_area, area_factor=0.01):
         approx = cv2.approxPolyDP(contour, epsilon, True)
 
         if len(approx) == 4:
+        #if True:
             x, y, w, h = cv2.boundingRect(approx)
             aspect_ratio = w / h
             item_area = w * h
-            if (1.5 <= aspect_ratio <= 2.5) and (item_area >= legend_area * area_factor):
+            print (f"{legend_area}:{item_area}")
+            if (1 <= aspect_ratio <= 2.5) and (legend_area * area_min_factor <= item_area <= legend_area * area_max_factor):
+            #if (1 <= aspect_ratio <= 2.5):
                 rectangles.append([x, y, x + w, y + h, 1.0])
+
     return rectangles
 
 
-def process_image(image_path, output_image_path, output_txt_path, model_path, area_factor=0.01, expand_pixel=30):
-    import cv2
-    import numpy as np
+def process_image(image_path, output_image_path, output_txt_path, model_path, area_min_factor=0.001, area_max_factor=0.5, expand_pixel=30):
+    # 获取 output_dir
+    output_dir = os.path.dirname(output_image_path)
+    
+    # 从文件名中提取编号部分（例如，假设图像名是 "3.png"，我们提取 "3"）
+    image_name = os.path.basename(output_image_path)
+    image_base_name, _ = os.path.splitext(image_name)  # 获取文件名部分，不带扩展名
 
     main_img = cv2.imread(image_path)
     if main_img is None:
@@ -141,13 +154,15 @@ def process_image(image_path, output_image_path, output_txt_path, model_path, ar
 
     h_img, w_img = main_img.shape[:2]
     vis_img = main_img.copy()
+    overlay = vis_img.copy()  # 用来画半透明区域
 
-    predictions = predict_image_segmentation(main_img, model_path=model_path, smooth_contours=True,
-                                              epsilon_factor=0.02,
-                                              merge_same_class_boxes=True)
+    predictions = predict_image_segmentation(main_img, model_path=model_path, smooth_contours=False,
+                                              epsilon_factor=0.002,
+                                              merge_same_class_boxes=False)
 
     all_boxes = []
     found_legend = False
+    legend_counter = 0  # 用于编号
 
     for pred in predictions:
         if pred['class_name'] == 'legend':
@@ -155,37 +170,43 @@ def process_image(image_path, output_image_path, output_txt_path, model_path, ar
 
             pts = np.array(pred['points'], dtype=np.int32)
 
-            # --- 画真实legend polygon（蓝色） ---
+            # --- 画原始legend polygon（蓝色） ---
             cv2.polylines(vis_img, [pts], isClosed=True, color=(255, 0, 0), thickness=2)
 
             # --- 创建mask并膨胀 ---
             mask = np.zeros(main_img.shape[:2], dtype=np.uint8)
             cv2.fillPoly(mask, [pts], 255)
 
-            # 膨胀（扩展legend区域）
-            kernel = np.ones((expand_pixel * 2 + 1, expand_pixel * 2 + 1), np.uint8)  # 控制膨胀量
+            kernel = np.ones((expand_pixel * 2 + 1, expand_pixel * 2 + 1), np.uint8)
             dilated_mask = cv2.dilate(mask, kernel, iterations=1)
 
-            # 在膨胀后的mask上重新找轮廓
             contours, _ = cv2.findContours(dilated_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             if len(contours) == 0:
                 raise ValueError("膨胀后的mask没有找到任何轮廓")
 
             expanded_pts = max(contours, key=cv2.contourArea)
 
-            # --- 用膨胀后的轮廓画扩展后的legend（紫色） ---
+            # --- 画扩展后的legend多边形（紫色） ---
             cv2.polylines(vis_img, [expanded_pts], isClosed=True, color=(255, 0, 255), thickness=3)
 
-            # 取扩展后的bounding box用于裁剪
+            expanded_mask = np.zeros_like(dilated_mask)
+            cv2.fillPoly(expanded_mask, [expanded_pts], 255)
+
+            legend_crop = cv2.bitwise_and(main_img, main_img, mask=expanded_mask)
+
             x, y, w, h = cv2.boundingRect(expanded_pts)
-            x, y = max(x, 0), max(y, 0)
-            x2, y2 = min(x + w, w_img), min(y + h, h_img)
+            legend_crop = legend_crop[y:y+h, x:x+w]
+            cropped_mask = expanded_mask[y:y+h, x:y+h]
 
-            legend_crop = main_img[y:y2, x:x2]
-            legend_area = (x2 - x) * (y2 - y)
+            legend_area = cv2.countNonZero(cropped_mask)
 
-            # --- 对legend_crop做小矩形检测 ---
-            rectangles = obtain_legend_rectangle_bbox(legend_crop, legend_area, area_factor=area_factor)
+            legend_counter += 1  # 增加图例编号
+
+            # 构建文件名并传递到函数中
+            binary_image_filename = os.path.join(output_dir, f"{image_base_name}_{legend_counter}_binary.png")
+            
+            # 保存二值化图像
+            rectangles = obtain_legend_rectangle_bbox(legend_crop, legend_area, area_min_factor=area_min_factor, area_max_factor=area_max_factor, binary_image_filename=binary_image_filename)
 
             def box_area(rect):
                 return (rect[2] - rect[0]) * (rect[3] - rect[1])
@@ -207,6 +228,11 @@ def process_image(image_path, output_image_path, output_txt_path, model_path, ar
 
             for rect in selected:
                 x1, y1, x2, y2, _ = rect
+
+                # 在overlay上填充矩形（绿色填充）
+                cv2.rectangle(overlay, (x + x1, y + y1), (x + x2, y + y2), (0, 255, 0), -1)
+
+                # 在vis_img上画矩形边框
                 cv2.rectangle(vis_img, (x + x1, y + y1), (x + x2, y + y2), (0, 255, 0), 2)
 
                 points = [
@@ -223,7 +249,7 @@ def process_image(image_path, output_image_path, output_txt_path, model_path, ar
         legend_crop = main_img
         legend_area = w_img * h_img
 
-        rectangles = obtain_legend_rectangle_bbox(legend_crop, legend_area, area_factor=area_factor)
+        rectangles = obtain_legend_rectangle_bbox(legend_crop, legend_area, area_min_factor=area_min_factor, area_max_factor=area_max_factor, binary_image_filename=os.path.join(output_dir, f"{image_base_name}_legend_binary.png"))
 
         def box_area(rect):
             return (rect[2] - rect[0]) * (rect[3] - rect[1])
@@ -234,7 +260,7 @@ def process_image(image_path, output_image_path, output_txt_path, model_path, ar
         rectangles.sort(key=box_area, reverse=True)
 
         selected = []
-        for rect in selected:
+        for rect in rectangles:
             overlap = False
             for kept in selected:
                 if boxes_overlap(rect, kept):
@@ -245,6 +271,8 @@ def process_image(image_path, output_image_path, output_txt_path, model_path, ar
 
         for rect in selected:
             x1, y1, x2, y2, _ = rect
+
+            cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 255, 0), -1)
             cv2.rectangle(vis_img, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
             points = [
@@ -255,7 +283,10 @@ def process_image(image_path, output_image_path, output_txt_path, model_path, ar
             ]
             all_boxes.append(points)
 
-    # 保存最终绘制好的图
+    # --- 融合overlay到vis_img，产生半透明填充效果 ---
+    alpha = 0.2  # 半透明程度
+    vis_img = cv2.addWeighted(overlay, alpha, vis_img, 1 - alpha, 0)
+
     cv2.imwrite(output_image_path, vis_img)
 
     with open(output_txt_path, 'w') as f:
@@ -266,12 +297,14 @@ def process_image(image_path, output_image_path, output_txt_path, model_path, ar
     print(f"处理完成，保存到 {output_image_path} 和 {output_txt_path}")
 
 
+
 def main():
     parser = argparse.ArgumentParser(description="批量处理地图图例区域提取")
     parser.add_argument('--input_dir', type=str, help="输入文件夹路径")
     parser.add_argument('--output_dir', type=str, help="输出文件夹路径")
     parser.add_argument('--model_path', type=str, help="YOLO模型路径")
-    parser.add_argument('--area_factor', type=float, default=0.01, help="小矩形面积占legend面积的最小比例，默认1%")
+    parser.add_argument('--area_min_factor', type=float, default=0.001, help="小矩形面积占legend面积的最小比例，默认0.1%")
+    parser.add_argument('--area_max_factor', type=float, default=0.5, help="小矩形面积占legend面积的最比例，默认50%")
     parser.add_argument('--expand_pixel', type=int, default=30, help="legend裁剪扩展固定像素，默认30px")
 
     args = parser.parse_args()
@@ -293,7 +326,7 @@ def main():
         output_txt_path = os.path.join(args.output_dir, f"{subdir}.txt")
 
         process_image(image_path, output_image_path, output_txt_path, args.model_path,
-                      area_factor=args.area_factor, expand_pixel=args.expand_pixel)
+                      area_min_factor=args.area_min_factor, area_max_factor=args.area_max_factor, expand_pixel=args.expand_pixel)
 
 
 if __name__ == "__main__":
