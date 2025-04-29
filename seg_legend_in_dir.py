@@ -303,11 +303,11 @@ def segment_map(image: np.ndarray, model_path: str="../model/layout-bs256-gpu8-v
     """
     return predict_image_segmentation(image, model_path=model_path, return_vis=return_vis)
 
-def process_folders(input_root, model_path, use_bbox=True):
+def process_folders(input_root, model_path, smooth_contours=True, epsilon_factor=0.02, merge_same_class_boxes=True):
     for folder_name in os.listdir(input_root):
         folder_path = os.path.join(input_root, folder_name)
-        if not os.path.isdir(folder_path) or not folder_name.isdigit():
-            continue
+        #if not os.path.isdir(folder_path) or not folder_name.isdigit():
+        #    continue
 
         image_dir = os.path.join(folder_path, "image")
         layout_dir = os.path.join(folder_path, "layout")
@@ -331,7 +331,12 @@ def process_folders(input_root, model_path, use_bbox=True):
                 continue
 
             # 调用封装好的 API 函数
-            predictions, vis_img = predict_image_segmentation(img, model_path=model_path, return_vis=True, use_bbox=use_bbox)
+            predictions, vis_img = predict_image_segmentation(img,
+                    model_path=model_path,
+                    return_vis=True,
+                    smooth_contours=smooth_contours, 
+                    epsilon_factor=epsilon_factor,
+                    merge_same_class_boxes=merge_same_class_boxes)
 
             # 保存可视化图像
             masked_path = os.path.join(layout_dir, f"masked_{filename}")
@@ -476,17 +481,28 @@ def main():
     parser.add_argument('--smooth_contours', action='store_true', help="smooth contours")
     parser.add_argument('--epsilon_factor', type=float, default=0.02, help="epsilon factor for smooth contours")
     parser.add_argument('--merge_same_class_boxes', action='store_true', help="whether to merge same class boxes")
+    parser.add_argument('--output_to_origin_folder', action='store_true', help="whether to output to original folder")
 
     args = parser.parse_args()
 
-    process_folders_to_ouput_dir(
-        input_root=args.input_root,
-        model_path=args.model_path,
-        output_dir=args.output_dir,
-        use_opencv=args.use_opencv,
-        smooth_contours=args.smooth_contours, 
-        epsilon_factor=args.epsilon_factor,
-        merge_same_class_boxes=args.merge_same_class_boxes
-    )
+    if args.output_to_origin_folder:
+        process_folders(
+            input_root=args.input_root,
+            model_path=args.model_path,
+            smooth_contours=args.smooth_contours, 
+            epsilon_factor=args.epsilon_factor,
+            merge_same_class_boxes=args.merge_same_class_boxes
+        )
+    else:
+        process_folders_to_ouput_dir(
+            input_root=args.input_root,
+            model_path=args.model_path,
+            output_dir=args.output_dir,
+            use_opencv=args.use_opencv,
+            smooth_contours=args.smooth_contours, 
+            epsilon_factor=args.epsilon_factor,
+            merge_same_class_boxes=args.merge_same_class_boxes
+        )
+    
 if __name__ == "__main__":
     main()
