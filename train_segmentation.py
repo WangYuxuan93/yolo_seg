@@ -12,7 +12,7 @@ def setup_logging(log_file):
     )
 
 def train(model, data_file, output_folder, device="0", epochs=10, warmup_epochs=1, image_size=768, batch_size=16, lr0=0.01, lrf=0.01, box=7.5, cls=0.5, dropout=0.2, 
-          multi_scale=False, mosaic=0.3, overlap_mask=True, mask_ratio=2, cos_lr=True, weight_decay=0.0001, log_file="train_log.txt"):
+          multi_scale=False, mosaic=0.3, overlap_mask=True, mask_ratio=2, cos_lr=True, weight_decay=0.0001, close_mosaic=10, log_file="train_log.txt"):
     # Log the training parameters
     logging.info("Training parameters:")
     logging.info(f"data_file: {data_file}")
@@ -33,6 +33,7 @@ def train(model, data_file, output_folder, device="0", epochs=10, warmup_epochs=
     logging.info(f"mask_ratio: {mask_ratio}")
     logging.info(f"cos_lr: {cos_lr}")
     logging.info(f"weight_decay: {weight_decay}")
+    logging.info(f"close_mosaic: {close_mosaic}")
 
     # Train the model
     results = model.train(
@@ -54,7 +55,8 @@ def train(model, data_file, output_folder, device="0", epochs=10, warmup_epochs=
         mosaic=mosaic,  # Added mosaic
         overlap_mask=overlap_mask,  # Added overlap_mask
         mask_ratio=mask_ratio,  # Added mask_ratio
-        weight_decay=weight_decay  # Added weight_decay
+        weight_decay=weight_decay,  # Added weight_decay
+        close_mosaic=close_mosaic
     )
 
 if __name__ == '__main__':
@@ -79,6 +81,7 @@ if __name__ == '__main__':
     parser.add_argument('--mask_ratio', default=2, type=int, help='Downsample ratio for segmentation masks')
     parser.add_argument('--cos_lr', default=True, type=bool, help='Enable cosine learning rate scheduler')
     parser.add_argument('--weight_decay', default=0.001, type=float, help='L2 regularization (weight decay)')
+    parser.add_argument('--close_mosaic', default=10, type=int, help='Close mosaic at last N epochs')
     parser.add_argument('--log_file', default='train_log.txt', type=str, help='Log file to save parameters')
 
     args = parser.parse_args()
