@@ -140,7 +140,10 @@ def obtain_legend_rectangle_bbox(main_img, legend_area, area_min_factor=0.01, ar
     return rectangles
 
 
-def process_image(image_path, output_image_path, output_txt_path, model_path, area_min_factor=0.001, area_max_factor=0.5, expand_pixel=30):
+def process_image(image_path, output_image_path, output_txt_path, model_path,
+                  legend_area_min_factor=0.001, legend_area_max_factor=0.1,
+                  global_area_min_factor=0.0001, global_area_max_factor=0.01,
+                  expand_pixel=30):
     # 获取 output_dir
     output_dir = os.path.dirname(output_image_path)
     
@@ -208,7 +211,11 @@ def process_image(image_path, output_image_path, output_txt_path, model_path, ar
             binary_image_filename = os.path.join(output_dir, f"{image_base_name}_{legend_counter}_binary.png")
             
             # 保存二值化图像
-            rectangles = obtain_legend_rectangle_bbox(legend_crop, legend_area, area_min_factor=area_min_factor, area_max_factor=area_max_factor, binary_image_filename=binary_image_filename)
+            rectangles = obtain_legend_rectangle_bbox(legend_crop, legend_area,
+                                                        area_min_factor=legend_area_min_factor,
+                                                        area_max_factor=legend_area_max_factor,
+                                                        binary_image_filename=binary_image_filename
+                                                    )
 
             def box_area(rect):
                 return (rect[2] - rect[0]) * (rect[3] - rect[1])
@@ -251,7 +258,11 @@ def process_image(image_path, output_image_path, output_txt_path, model_path, ar
         legend_crop = main_img
         legend_area = w_img * h_img
 
-        rectangles = obtain_legend_rectangle_bbox(legend_crop, legend_area, area_min_factor=area_min_factor, area_max_factor=area_max_factor, binary_image_filename=os.path.join(output_dir, f"{image_base_name}_legend_binary.png"))
+        rectangles = obtain_legend_rectangle_bbox(legend_crop, legend_area,
+                                                    area_min_factor=global_area_min_factor,
+                                                    area_max_factor=global_area_max_factor,
+                                                    binary_image_filename=os.path.join(output_dir, f"{image_base_name}_legend_binary.png")
+                                                    )
 
         def box_area(rect):
             return (rect[2] - rect[0]) * (rect[3] - rect[1])
@@ -301,13 +312,21 @@ def process_image(image_path, output_image_path, output_txt_path, model_path, ar
 
 
 def main():
-    parser = argparse.ArgumentParser(description="批量处理地图图例区域提取")
-    parser.add_argument('--input_dir', type=str, help="输入文件夹路径")
-    parser.add_argument('--output_dir', type=str, help="输出文件夹路径")
-    parser.add_argument('--model_path', type=str, help="YOLO模型路径")
-    parser.add_argument('--area_min_factor', type=float, default=0.001, help="小矩形面积占legend面积的最小比例，默认0.1%")
-    parser.add_argument('--area_max_factor', type=float, default=0.5, help="小矩形面积占legend面积的最比例，默认50%")
-    parser.add_argument('--expand_pixel', type=int, default=30, help="legend裁剪扩展固定像素，默认30px")
+    parser = argparse.ArgumentParser(description="Batch processing for extracting map legend regions and detecting item boxes")
+    parser.add_argument('--input_dir', type=str, help="Path to the input root directory containing numbered subfolders")
+    parser.add_argument('--output_dir', type=str, help="Path to the output directory where results will be saved")
+    parser.add_argument('--model_path', type=str, help="Path to the YOLO model used for semantic segmentation")
+    parser.add_argument('--legend_area_min_factor', type=float, default=0.001,
+                        help="Minimum ratio of item box area to legend area when a legend is detected (default: 0.001)")
+    parser.add_argument('--legend_area_max_factor', type=float, default=0.1,
+                        help="Maximum ratio of item box area to legend area when a legend is detected (default: 0.1)")
+    parser.add_argument('--global_area_min_factor', type=float, default=0.001,
+                        help="Minimum ratio of item box area to full image area when no legend is detected (default: 0.0001)")
+    parser.add_argument('--global_area_max_factor', type=float, default=0.01,
+                        help="Maximum ratio of item box area to full image area when no legend is detected (default: 0.01)")
+    parser.add_argument('--expand_pixel', type=int, default=30,
+                        help="Number of pixels to expand around the detected legend region for further processing (default: 30px)")
+
 
     args = parser.parse_args()
 
@@ -328,7 +347,11 @@ def main():
         output_txt_path = os.path.join(args.output_dir, f"{subdir}.txt")
 
         process_image(image_path, output_image_path, output_txt_path, args.model_path,
-                      area_min_factor=args.area_min_factor, area_max_factor=args.area_max_factor, expand_pixel=args.expand_pixel)
+              legend_area_min_factor=args.legend_area_min_factor,
+              legend_area_max_factor=args.legend_area_max_factor,
+              global_area_min_factor=args.global_area_min_factor,
+              global_area_max_factor=args.global_area_max_factor,
+              expand_pixel=args.expand_pixel)
 
 
 if __name__ == "__main__":
