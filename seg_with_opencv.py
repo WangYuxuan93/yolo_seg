@@ -303,17 +303,46 @@ def filter_boxes_by_uniform_color(boxes, image, offset_xy=(0, 0),
     return kept_boxes, filtered_out_boxes
 
 
-def is_rectangle(approx, angle_tolerance=15):
+def is_rectangle_aligned(approx, angle_tolerance=15, alignment_tolerance=10):
+    """
+    判断轮廓是否是矩形，且矩形边与图像边缘（x/y轴）对齐。
+
+    参数：
+    - approx: cv2.approxPolyDP 输出的 4 点轮廓
+    - angle_tolerance: 判断矩形角度偏差容忍度（默认 ±15°）
+    - alignment_tolerance: 边方向与水平/垂直的容忍度（默认 ±10°）
+
+    返回：
+    - True 表示是对齐矩形，False 表示不是
+    """
     def angle_between(v1, v2):
         cos_theta = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
         cos_theta = np.clip(cos_theta, -1.0, 1.0)
         return np.degrees(np.arccos(cos_theta))
 
+    def classify_alignment(vec):
+        angle = np.degrees(np.arctan2(vec[1], vec[0]))  # 与 x 轴夹角 [-180, 180]
+        angle = abs(angle)  # 考虑角度对称性
+        if angle <= alignment_tolerance or abs(angle - 180) <= alignment_tolerance:
+            return 'horizontal'
+        elif abs(angle - 90) <= alignment_tolerance:
+            return 'vertical'
+        else:
+            return 'diagonal'
+
     pts = approx.reshape(4, 2)
     vectors = [pts[(i + 1) % 4] - pts[i] for i in range(4)]
-    angles = [angle_between(vectors[i], vectors[(i + 1) % 4]) for i in range(4)]
 
-    return all(abs(a - 90) <= angle_tolerance for a in angles)
+    # 是否是矩形（角度近似90°）
+    angles = [angle_between(vectors[i], vectors[(i + 1) % 4]) for i in range(4)]
+    is_rectangular = all(abs(a - 90) <= angle_tolerance for a in angles)
+
+    # 判断边方向（是否水平/垂直）
+    alignments = [classify_alignment(v) for v in vectors]
+    is_axis_aligned = alignments.count('horizontal') == 2 and alignments.count('vertical') == 2
+
+    return is_rectangular and is_axis_aligned
+
 
 
 def obtain_legend_rectangle_bbox(main_img, legend_area, area_min_factor=0.01, area_max_factor=0.5, binary_image_filename=None):
@@ -337,7 +366,7 @@ def obtain_legend_rectangle_bbox(main_img, legend_area, area_min_factor=0.01, ar
         epsilon = 0.02 * cv2.arcLength(contour, True)
         approx = cv2.approxPolyDP(contour, epsilon, True)
 
-        if len(approx) == 4 and is_rectangle(approx):
+        if len(approx) == 4 and is_rectangle_aligned(approx):
         #if True:
             x, y, w, h = cv2.boundingRect(approx)
             aspect_ratio = w / h
@@ -428,6 +457,7 @@ def filter_isolated_boxes_by_clustering_auto_eps(boxes, min_samples=3, eps_scale
     - cluster_standards: Dict[label] = (width, height)，每个聚类的标准尺寸
     """
     print("\n[Cluster] Clustring boxes for distance filtering:")
+    print ("Input: {}".format(len(boxes)))
     if len(boxes) == 0:
         return [], [], [], {}
 
@@ -437,7 +467,25 @@ def filter_isolated_boxes_by_clustering_auto_eps(boxes, min_samples=3, eps_scale
     ])
 
     if len(centers) <= min_samples:
-        return boxes, [0] * len(boxes), [], {}
+        print(f"Box count ({len(centers)}) <= min_samples ({min_samples}), skipping DBSCAN.")
+
+        labels = [0] * len(boxes)
+        cluster_sizes = defaultdict(list)
+        for box in boxes:
+            w = np.linalg.norm(np.array(box[1]) - np.array(box[0]))
+            h = np.linalg.norm(np.array(box[3]) - np.array(box[0]))
+            cluster_sizes[0].append((w, h))
+
+        cluster_standards = {}
+        print("Standard width and height:")
+        widths = [wh[0] for wh in cluster_sizes[0]]
+        heights = [wh[1] for wh in cluster_sizes[0]]
+        std_w = np.median(widths)
+        std_h = np.median(heights)
+        cluster_standards[0] = (std_w, std_h)
+        print(f" - Cluster 0: width = {std_w:.1f}, height = {std_h:.1f} ({len(widths)} boxes)")
+
+        return boxes, labels, [], cluster_standards
 
     # 计算第 k 个邻居距离
     k = min_samples
@@ -529,7 +577,8 @@ def remove_overlapping_rect_simple(rectangles):
 
     return selected
 
-def remove_overlapping_boxes_simple(rectangles):
+def remove_overlapping_boxes_simple(rectangles, type="all"):
+    print (f"\n[Overlap] Removing overlapping from {type} boxes")
     def box_area(rect):
         x1, y1 = rect[0]
         x2, y2 = rect[2]
@@ -548,6 +597,8 @@ def remove_overlapping_boxes_simple(rectangles):
     for rect in rectangles:
         if not any(boxes_overlap(rect, kept) for kept in selected):
             selected.append(rect)
+
+    print ("Input: {}, Output: {}".format(len(rectangles), len(selected)))
 
     return selected
 
@@ -737,7 +788,7 @@ def process_image(image_path, output_image_path, output_txt_path, model_path,
                                                                     initial_expand=color_test_initial_expand,
                                                                     border_thickness=color_test_border_thickness,
                                                                     default_bg_color=default_bg_color,
-                                                                    color_tolerance=15,
+                                                                    color_tolerance=color_tolerance,
                                                                     debug=debug,
                                                                     debug_dir=output_dir,
                                                                     file_name=image_base_name,
@@ -766,9 +817,9 @@ def process_image(image_path, output_image_path, output_txt_path, model_path,
             all_boxes.append(points)
         """
 
-    all_boxes = remove_overlapping_boxes_simple(all_boxes)
+    all_boxes = remove_overlapping_boxes_simple(all_boxes, type="all")
 
-    filtered_out_boxes = remove_overlapping_boxes_simple(filtered_out_boxes)
+    filtered_out_boxes = remove_overlapping_boxes_simple(filtered_out_boxes, type="filtered out")
 
     # --- 融合overlay到vis_img，产生半透明填充效果 ---
     clustered_boxes, labels, outlier_boxes, cluster_standards = filter_isolated_boxes_by_clustering_auto_eps(all_boxes, eps_scale=cluster_eps_scale, min_samples=cluster_min_samples)
@@ -779,6 +830,11 @@ def process_image(image_path, output_image_path, output_txt_path, model_path,
 
     all_boxes = filtered_boxes + recovered_boxes
     #print (all_boxes)
+
+    if not all_boxes:
+        print ("\n[Fallback] No box remained, fall back to boxes filtered out")
+        print ("Final box: {}".format(len(filtered_out_boxes)))
+        all_boxes = filtered_out_boxes
 
 
     # Step 2：统一绘制 overlay 和 vis_img 中的框
@@ -820,7 +876,7 @@ def main():
                         help="Minimum ratio of item box area to full image area when no legend is detected (default: 0.0001)")
     parser.add_argument('--global_area_max_factor', type=float, default=0.01,
                         help="Maximum ratio of item box area to full image area when no legend is detected (default: 0.01)")
-    parser.add_argument('--expand_pixel', type=int, default=30,
+    parser.add_argument('--expand_pixel', type=int, default=40,
                         help="Number of pixels to expand around the detected legend region for further processing (default: 30px)")
     parser.add_argument('--cluster_eps_scale', type=float, default=1.2,
                         help="Scale factor applied to estimated eps in DBSCAN clustering (default: 1.2)")
@@ -832,7 +888,7 @@ def main():
                         help="Initial number of pixels to expand each box before checking border color uniformity (default: 1)")
     parser.add_argument('--color_test_border_thickness', type=int, default=1,
                         help="Thickness of the border (in pixels) to test for color consistency around the expanded box (default: 1)")
-    parser.add_argument('--color_tolerance', type=float, default=25,
+    parser.add_argument('--color_tolerance', type=float, default=50,
                         help="Tolerance for average border color difference (default: 25). ")
     parser.add_argument('--skip_legend', action='store_true',
                         help="If set, skip searching within legend box and directly detect items in the whole image.")
@@ -869,7 +925,8 @@ def main():
               cluster_recover_size_tolerance=args.cluster_recover_size_tolerance, default_bg_color=default_bg_color,
               color_test_initial_expand=args.color_test_initial_expand, color_test_border_thickness=args.color_test_border_thickness,
               color_tolerance=args.color_tolerance,
-              skip_legend=args.skip_legend)
+              skip_legend=args.skip_legend,
+              debug=False)
 
 
 if __name__ == "__main__":
