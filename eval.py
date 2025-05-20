@@ -32,6 +32,8 @@ def compute_union_iou(gold_polys, pred_polys):
 
 def main(pred_dir, gold_dir, output_json_path):
     iou_dict = {}
+    all_pred_polys = []
+    all_gold_polys = []
 
     for pred_txt in glob.glob(os.path.join(pred_dir, '*.txt')):
         name = os.path.splitext(os.path.basename(pred_txt))[0]
@@ -48,20 +50,35 @@ def main(pred_dir, gold_dir, output_json_path):
             print(f"[Warning] Empty polygons in {name}")
             continue
 
+        # Per-image IoU
         iou = compute_union_iou(gold_polys, pred_polys)
         iou_dict[name] = round(iou, 6)
 
+        # 累积到全局列表中
+        all_pred_polys.extend(pred_polys)
+        all_gold_polys.extend(gold_polys)
+
+    # 按图像级 IoU 从高到低排序
     sorted_iou = dict(sorted(iou_dict.items(), key=lambda item: item[1], reverse=True))
 
+    # 全局级 IoU 计算
+    global_iou = compute_union_iou(all_gold_polys, all_pred_polys)
+    sorted_iou["__global_iou__"] = round(global_iou, 6)
+
+    # 写入 JSON 文件
     with open(output_json_path, 'w', encoding='utf-8') as f:
         json.dump(sorted_iou, f, indent=2)
 
-    if sorted_iou:
-        avg_iou = sum(sorted_iou.values()) / len(sorted_iou)
-        print(f"\n📊 共评估 {len(sorted_iou)} 张图，平均 IoU = {avg_iou:.4f}")
+    # 控制台输出
+    if iou_dict:
+        avg_iou = sum(iou_dict.values()) / len(iou_dict)
+        print(f"\n📊 共评估 {len(iou_dict)} 张图")
+        print(f"📈 图像级平均 IoU = {avg_iou:.4f}")
+        print(f"🌐 全局级整体 IoU  = {global_iou:.4f}")
         print(f"✅ 结果已保存到 {output_json_path}")
     else:
         print("⚠️ 没有成功评估任何文件。")
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Evaluate overall IoU between predicted and gold polygons")
