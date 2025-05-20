@@ -45,7 +45,7 @@ for folder in os.listdir(base_dir):
         if feature['properties'].get('type') != 'legend_patch':
             continue
 
-        label = feature['properties'].get('label', 'Unknown')
+        label = feature['properties'].get('label', 'Unknown').replace("\n","")
         multipolygon = feature['geometry'].get('coordinates', [])
 
         for polygon in multipolygon:
@@ -77,6 +77,8 @@ for folder in os.listdir(base_dir):
 
     # 保存文本
     item_txt_path = os.path.join(gold_item_dir, 'item_box.txt')
+    if not output_lines:
+        print ("{} is empty".format(folder))
     with open(item_txt_path, 'w', encoding='utf-8') as f:
         for line in output_lines:
             f.write(line + '\n')
