@@ -899,7 +899,7 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
 
     subdirs = [d for d in os.listdir(args.input_dir) if os.path.isdir(os.path.join(args.input_dir, d))]
-    subdirs = [d for d in subdirs if d.isdigit()]
+    #subdirs = [d for d in subdirs if d.isdigit()]
 
     #default_bg_color = None
     default_bg_color = (255, 255, 255)
