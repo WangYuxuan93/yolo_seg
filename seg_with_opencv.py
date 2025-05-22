@@ -1,10 +1,11 @@
 import cv2
 import numpy as np
 import os
+import math
 import glob
 import argparse
 from ultralytics import YOLO
-from collections import defaultdict
+from collections import defaultdict, Counter
 
 def predict_image_segmentation(image: np.ndarray, model_path: str, 
                                 return_vis: bool = False,
@@ -133,7 +134,7 @@ def is_box_surrounded_by_uniform_color(image, box, initial_expand=1, border_thic
     right = image[y1_outer:y2_outer, x2_ext:x2_outer]
 
     if any(arr.size == 0 for arr in [top, bottom, left, right]):
-        return False
+        return False, None
 
     # 提取边缘所有像素
     border_pixels = np.concatenate([
@@ -234,9 +235,9 @@ def is_box_surrounded_by_uniform_color(image, box, initial_expand=1, border_thic
         debug_path = os.path.join(debug_dir, f"{file_name}_box_{index}_debug.png")
         cv2.imwrite(debug_path, annotated)
 
-    return result
+    return result, ref_color
 
-
+"""
 def filter_boxes_by_uniform_color(boxes, image, offset_xy=(0, 0),
                                    initial_expand=1,
                                    border_thickness=1,
@@ -247,22 +248,6 @@ def filter_boxes_by_uniform_color(boxes, image, offset_xy=(0, 0),
                                    file_name=None,
                                    legend_counter=None,
                                    start_index=0):
-    """
-    对 box 列表进行颜色一致性判断，过滤掉边缘颜色不符合的 box。
-
-    参数：
-    - boxes: List[List[int]]，每个为 [x1, y1, x2, y2, score]
-    - image: 原图
-    - offset_xy: (x_offset, y_offset)，box 偏移量（如 legend 裁剪偏移）
-    - initial_expand, border_thickness, default_bg_color, color_tolerance: 颜色判断参数
-    - debug: 是否保存 debug 图
-    - debug_dir, file_name, legend_counter: 用于保存调试图命名
-    - start_index: box 序号起始值（用于 debug 命名）
-
-    返回：
-    - kept_boxes: List[List[Tuple[int, int]]]，通过过滤的 box（四点格式）
-    - filtered_out_boxes: List[List[Tuple[int, int]]]，被过滤掉的 box（四点格式）
-    """
     print ("\n[Color] Filtering boxes by surrounded color")
 
     x_offset, y_offset = offset_xy
@@ -301,9 +286,100 @@ def filter_boxes_by_uniform_color(boxes, image, offset_xy=(0, 0),
     print ("Input: {}, Output: {}".format(len(boxes), len(kept_boxes)))
 
     return kept_boxes, filtered_out_boxes
+"""
 
 
-def is_rectangle_aligned(approx, angle_tolerance=15, alignment_tolerance=10):
+def filter_boxes_by_uniform_color(boxes, image, offset_xy=(0, 0),
+                                   initial_expand=1,
+                                   border_thickness=1,
+                                   default_bg_color=None,
+                                   color_tolerance=15,
+                                   color_rounding=5,  # <-- 新增参数
+                                   debug=False,
+                                   debug_dir=None,
+                                   file_name=None,
+                                   legend_counter=None,
+                                   start_index=0):
+    """
+    对 box 列表进行颜色一致性判断，过滤掉边缘颜色不符合的 box，
+    并在通过初筛后统计 dominant color，只保留颜色接近主色的 box。
+
+    参数：
+    - boxes: List[List[int]]，每个为 [x1, y1, x2, y2, score]
+    - image: 原图
+    - offset_xy: (x_offset, y_offset)，box 坐标偏移量（如 legend 裁剪偏移）
+    - color_tolerance: 与 dominant color 差值容忍度（欧几里得距离）
+    - color_rounding: int，颜色量化桶大小（默认5，即四舍五入到5的倍数）
+    - 返回：
+        - kept_boxes: 最终保留 box（四点格式）
+        - filtered_out_boxes: 被丢弃的 box（四点格式）
+    """
+    print("\n[Color] Filtering boxes by surrounded color")
+
+    x_offset, y_offset = offset_xy
+    temp_kept = []  # [(points, mean_color)]
+    filtered_out_boxes = []
+
+    for i, rect in enumerate(boxes):
+        rec_id = start_index + i + 1
+        x1, y1, x2, y2, score = rect
+        adjusted_rect = [x_offset + x1, y_offset + y1, x_offset + x2, y_offset + y2, score]
+
+        points = [
+            (x_offset + x1, y_offset + y1),
+            (x_offset + x2, y_offset + y1),
+            (x_offset + x2, y_offset + y2),
+            (x_offset + x1, y_offset + y2)
+        ]
+
+        passed, mean_color = is_box_surrounded_by_uniform_color(
+            image, adjusted_rect,
+            initial_expand=initial_expand,
+            border_thickness=border_thickness,
+            default_bg_color=default_bg_color,
+            color_tolerance=color_tolerance,
+            debug_dir=debug_dir if debug else None,
+            file_name=f"{file_name}_{legend_counter}" if legend_counter is not None else file_name,
+            index=rec_id
+        )
+
+        if passed:
+            temp_kept.append((points, mean_color))
+        else:
+            filtered_out_boxes.append(points)
+
+    if not temp_kept:
+        print("No box passed initial uniform color check.")
+        return [], filtered_out_boxes
+
+    # 统计 dominant mean color（分桶简化）
+    rounded_colors = [
+        tuple((np.array(c) // color_rounding * color_rounding).astype(int))
+        for _, c in temp_kept
+    ]
+    dominant_color, _ = Counter(rounded_colors).most_common(1)[0]
+    print(f"Dominant mean color (rounded): {dominant_color}")
+
+    # 筛选颜色接近 dominant color 的 box
+    kept_boxes = []
+    refined_filtered_out = []
+
+    for (points, mean_color) in temp_kept:
+        diff = np.linalg.norm(np.array(mean_color) - np.array(dominant_color))
+        if diff <= color_tolerance:
+            kept_boxes.append(points)
+        else:
+            refined_filtered_out.append(points)
+
+    filtered_out_boxes.extend(refined_filtered_out)
+
+    #print(f"Background Color: {dominant_color}")
+    print(f"Input: {len(boxes)}, After initial pass: {len(temp_kept)}, Final kept: {len(kept_boxes)}")
+
+    return kept_boxes, filtered_out_boxes
+
+
+def is_rectangle_aligned(approx, angle_tolerance=15, alignment_tolerance=5):
     """
     判断轮廓是否是矩形，且矩形边与图像边缘（x/y轴）对齐。
 
@@ -344,7 +420,6 @@ def is_rectangle_aligned(approx, angle_tolerance=15, alignment_tolerance=10):
     return is_rectangular and is_axis_aligned
 
 
-
 def obtain_legend_rectangle_bbox(main_img, legend_area, area_min_factor=0.01, area_max_factor=0.5, binary_image_filename=None):
     print(f"\n[Search] Searching candidate item boxes")
     target_img = np.array(main_img)
@@ -379,7 +454,6 @@ def obtain_legend_rectangle_bbox(main_img, legend_area, area_min_factor=0.01, ar
     print ("Found {} candidates".format(len(rectangles)))
 
     return rectangles
-
 
 
 def recover_deleted_boxes_by_size_consistency(all_boxes, labels, outlier_boxes, size_tolerance=0.1):
@@ -641,6 +715,139 @@ def refine_boxes_by_size_consistency(boxes, cluster_standards, size_tolerance=0.
     return refined_boxes
 
 
+def load_predicted_text_boxes(pred_txt_path, angle_tolerance=15):
+    """
+    从 pred_image.txt 文件中读取文本框坐标，仅保留边缘平行或垂直的 box。
+
+    参数：
+    - pred_txt_path: str，文件路径，如 "bbox/pred_image.txt"
+    - angle_tolerance: float，角度容忍度（单位：度，默认 ±15°）
+
+    返回：
+    - boxes: List[List[Tuple[int, int]]]，每个 box 为四个点的列表
+    """
+    def is_aligned(points, tolerance_deg=15):
+        """检查 box 是否与图像边缘平行/垂直"""
+        def angle(p1, p2):
+            dx = p2[0] - p1[0]
+            dy = p2[1] - p1[1]
+            return math.degrees(math.atan2(dy, dx))
+
+        angles = []
+        for i in range(4):
+            a = points[i]
+            b = points[(i + 1) % 4]
+            theta = abs(angle(a, b)) % 180  # 只考虑正向角
+            angles.append(theta)
+
+        for theta in angles:
+            if not (
+                abs(theta - 0) <= tolerance_deg or
+                abs(theta - 90) <= tolerance_deg or
+                abs(theta - 180) <= tolerance_deg
+            ):
+                return False
+        return True
+
+    print(f"[Load] Reading predicted boxes from: {pred_txt_path}")
+    boxes = []
+    total = 0
+    if not os.path.exists(pred_txt_path):
+        print(f"[Warning] File not found: {pred_txt_path}")
+        return boxes
+
+    with open(pred_txt_path, 'r') as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            parts = list(map(int, line.split(',')))
+            if len(parts) != 8:
+                print(f"[Warning] Skipped invalid line: {line}")
+                continue
+            total += 1
+            points = [(parts[i], parts[i + 1]) for i in range(0, 8, 2)]
+            if is_aligned(points, tolerance_deg=angle_tolerance):
+                boxes.append(points)
+
+    print(f"[Filter] Total boxes: {total}, Kept after angle filtering: {len(boxes)}")
+    return boxes
+
+
+def find_item_boxes_with_nearby_text(item_boxes, text_boxes, 
+                                     h_thresh_ratio=1.0, w_thresh_ratio=2.0,
+                                     offset_xy=(0, 0)):
+    """
+    判断 item box 是否存在右方或下方的非重叠 OCR 文本框（满足空间约束），并返回匹配对。
+
+    参数：
+    - item_boxes: List[List[int]]，每个为 [x1, y1, x2, y2, score]
+    - text_boxes: List[List[Tuple[int, int]]]，OCR文本框，每个为4点
+    - h_thresh_ratio: float，下方容忍度比例（默认 0.3 × 高度）
+    - w_thresh_ratio: float，右方容忍度比例（默认 2.0 × 高度）
+    - offset_xy: Tuple[int, int]，可选，对 item_boxes 添加的 (x, y) 偏移
+
+    返回：
+    - matched_pairs: List[Tuple[item_box, matched_text_box]]
+        item_box 是加过 offset 的坐标，matched_text_box 是原始 4 点文本框
+    """
+    def box_to_bbox(box4pt):
+        xs = [p[0] for p in box4pt]
+        ys = [p[1] for p in box4pt]
+        return [min(xs), min(ys), max(xs), max(ys)]
+
+    x_offset, y_offset = offset_xy
+    text_bboxes = [box_to_bbox(tb) for tb in text_boxes]
+
+    matched_pairs = []
+
+    # 应用偏移到所有 item box
+    offset_item_boxes = []
+    for box in item_boxes:
+        x1, y1, x2, y2, score = box
+        offset_item_boxes.append([x1 + x_offset, y1 + y_offset, x2 + x_offset, y2 + y_offset, score])
+
+    for ibox in offset_item_boxes:
+        x1, y1, x2, y2, score = ibox
+        h = y2 - y1
+        w = x2 - x1
+        cx = (x1 + x2) // 2
+        cy = (y1 + y2) // 2
+
+        for tbox_raw, tbox in zip(text_boxes, text_bboxes):
+            tx1, ty1, tx2, ty2 = tbox
+
+            # --- 跳过与其他 item box 重叠的文本框 ---
+            overlap = False
+            for obox in offset_item_boxes:
+                if obox == ibox:
+                    continue
+                ox1, oy1, ox2, oy2, _ = obox
+                if not (tx2 <= ox1 or tx1 >= ox2 or ty2 <= oy1 or ty1 >= oy2):
+                    overlap = True
+                    break
+            if overlap:
+                continue
+
+            # --- 判断正右方 ---
+            if tx1 >= x2:
+                text_center_y = (ty1 + ty2) / 2
+                if y1 <= text_center_y <= y2 and (tx1 - x2 <= w_thresh_ratio * h):
+                    matched_pairs.append((ibox, tbox_raw))
+                    break
+
+            # --- 判断正下方 ---
+            if ty1 >= y2:
+                text_center_x = (tx1 + tx2) / 2
+                if x1 <= text_center_x <= x2 and (ty1 - y2 <= h_thresh_ratio * h):
+                    matched_pairs.append((ibox, tbox_raw))
+                    break
+
+
+    print(f"\n[Match] Found {len(matched_pairs)} item-text box pairs.")
+    return matched_pairs
+
+
 def process_image(image_path, output_image_path, output_txt_path, model_path,
                   legend_area_min_factor=0.001, legend_area_max_factor=0.1,
                   global_area_min_factor=0.0001, global_area_max_factor=0.01,
@@ -650,6 +857,15 @@ def process_image(image_path, output_image_path, output_txt_path, model_path,
                   color_tolerance=25,
                   skip_legend=False, debug=True):
     print(f"\n##################\nProcessing image：{image_path}")
+
+    # 获取 bbox/pred_image.txt 路径（从 image_path 推导）
+    subdir_path = os.path.dirname(os.path.dirname(image_path))  # 到达 part_x_y/
+    pred_txt_path = os.path.join(subdir_path, 'bbox', 'pred_image.txt')
+
+    # 读取 predicted text boxes（四点格式）
+    predicted_text_boxes = load_predicted_text_boxes(pred_txt_path)
+    #print (f"text boxes: {predicted_text_boxes}")
+
     # 获取 output_dir
     output_dir = os.path.dirname(output_image_path)
     
@@ -672,8 +888,9 @@ def process_image(image_path, output_image_path, output_txt_path, model_path,
     found_legend = False
     legend_counter = 0  # 用于编号
     filtered_out_boxes = []
-
     rec_id = 0
+
+    all_matched_pairs = []
 
     if not skip_legend:
         for pred in predictions:
@@ -711,9 +928,6 @@ def process_image(image_path, output_image_path, output_txt_path, model_path,
 
                 x, y, w, h = cv2.boundingRect(expanded_pts)
                 legend_crop = legend_crop[y:y+h, x:x+w]
-                #cropped_mask = expanded_mask[y:y+h, x:y+h]
-
-                #legend_area = w * h
 
                 legend_counter += 1  # 增加图例编号
 
@@ -727,6 +941,9 @@ def process_image(image_path, output_image_path, output_txt_path, model_path,
                                                             binary_image_filename=binary_image_filename)
 
                 selected = remove_overlapping_rect_simple(rectangles)
+
+                matched_pairs = find_item_boxes_with_nearby_text(selected, predicted_text_boxes, offset_xy=(x, y))
+                all_matched_pairs.extend(matched_pairs)
 
                 kept_boxes, filtered_boxes = filter_boxes_by_uniform_color(selected,
                                                                             image=main_img,
@@ -743,27 +960,6 @@ def process_image(image_path, output_image_path, output_txt_path, model_path,
                 all_boxes.extend(kept_boxes)
                 filtered_out_boxes.extend(filtered_boxes)
                 rec_id += len(selected)
-
-                """
-                for rect in selected:
-                    rec_id += 1
-                    x1, y1, x2, y2, score = rect
-                    adjusted_rect = [x + x1, y + y1, x + x2, y + y2, score]
-                    points = [
-                        (x + x1, y + y1),
-                        (x + x2, y + y1),
-                        (x + x2, y + y2),
-                        (x + x1, y + y2)
-                    ]
-
-                    if not is_box_surrounded_by_uniform_color(main_img, adjusted_rect, initial_expand=color_test_initial_expand, border_thickness=color_test_border_thickness,
-                                                    default_bg_color=(255, 255, 255),
-                                                    color_tolerance=15, debug_dir=output_dir if debug else None, file_name=f"{image_base_name}_{legend_counter}", index=rec_id):
-                        filtered_out_boxes.append(points)
-                        continue  # 跳过不合格的 box
-                    
-                    all_boxes.append(points)
-                """
 
     if not found_legend or not all_boxes:
         if not found_legend:
@@ -782,6 +978,9 @@ def process_image(image_path, output_image_path, output_txt_path, model_path,
 
         selected = remove_overlapping_rect_simple(rectangles)
 
+        matched_pairs = find_item_boxes_with_nearby_text(selected, predicted_text_boxes, offset_xy=(0, 0))
+        all_matched_pairs.extend(matched_pairs)
+
         kept_boxes, filtered_boxes = filter_boxes_by_uniform_color(selected,
                                                                     image=main_img,
                                                                     offset_xy=(0, 0),  # legend 裁剪偏移
@@ -797,25 +996,6 @@ def process_image(image_path, output_image_path, output_txt_path, model_path,
         all_boxes.extend(kept_boxes)
         filtered_out_boxes.extend(filtered_boxes)
         rec_id += len(selected)
-
-        """
-        for rect in selected:
-            rec_id += 1
-            x1, y1, x2, y2, _ = rect
-            points = [
-                (x1, y1),
-                (x2, y1),
-                (x2, y2),
-                (x1, y2)
-            ]
-            if not is_box_surrounded_by_uniform_color(main_img, rect, initial_expand=color_test_initial_expand, border_thickness=color_test_border_thickness, 
-                                    default_bg_color=(255, 255, 255),
-                                    color_tolerance=15, debug_dir=output_dir if debug else None, file_name=f"{image_base_name}_{legend_counter}", index=rec_id):
-                filtered_out_boxes.append(points)
-                continue  # 跳过不合格的 box
-            
-            all_boxes.append(points)
-        """
 
     all_boxes = remove_overlapping_boxes_simple(all_boxes, type="all")
 
@@ -836,7 +1016,6 @@ def process_image(image_path, output_image_path, output_txt_path, model_path,
         print ("Final box: {}".format(len(filtered_out_boxes)))
         all_boxes = filtered_out_boxes
 
-
     # Step 2：统一绘制 overlay 和 vis_img 中的框
     for box in all_boxes:
         # 每个 box 是四个点 [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
@@ -848,6 +1027,31 @@ def process_image(image_path, output_image_path, output_txt_path, model_path,
         # 边框
         cv2.rectangle(vis_img, (x1, y1), (x3, y3), (0, 255, 0), 2)
 
+    # ✅ 额外画出红色的 predicted text boxes
+    #for box in predicted_text_boxes:
+    #    x1, y1 = box[0]
+    #    x3, y3 = box[2]
+    #    cv2.rectangle(vis_img, (x1, y1), (x3, y3), (0, 0, 255), 2)
+
+
+    """
+    for ibox, tbox in all_matched_pairs:
+        x1, y1, x2, y2, _ = ibox
+        cv2.rectangle(vis_img, (x1, y1), (x2, y2), (255, 0, 0), 2)
+        cv2.polylines(vis_img, [np.array(tbox, dtype=np.int32)], isClosed=True, color=(0, 0, 255), thickness=2)
+
+        # 计算中心点
+        item_cx = (x1 + x2) // 2
+        item_cy = (y1 + y2) // 2
+
+        text_xs = [pt[0] for pt in tbox]
+        text_ys = [pt[1] for pt in tbox]
+        text_cx = sum(text_xs) // 4
+        text_cy = sum(text_ys) // 4
+
+        # 画连线：绿色线连接 item box 和 text box 中心
+        cv2.line(vis_img, (item_cx, item_cy), (text_cx, text_cy), (0, 255, 0), 2)
+    """
 
     alpha = 0.2  # 半透明程度
     vis_img = cv2.addWeighted(overlay, alpha, vis_img, 1 - alpha, 0)
@@ -901,8 +1105,8 @@ def main():
     subdirs = [d for d in os.listdir(args.input_dir) if os.path.isdir(os.path.join(args.input_dir, d))]
     #subdirs = [d for d in subdirs if d.isdigit()]
 
-    #default_bg_color = None
-    default_bg_color = (255, 255, 255)
+    default_bg_color = None
+    #default_bg_color = (255, 255, 255)
 
     for subdir in subdirs:
         image_folder = os.path.join(args.input_dir, subdir, 'image')
