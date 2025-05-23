@@ -294,7 +294,7 @@ def filter_boxes_by_uniform_color(boxes, image, offset_xy=(0, 0),
                                    border_thickness=1,
                                    default_bg_color=None,
                                    color_tolerance=15,
-                                   color_rounding=5,  # <-- 新增参数
+                                   color_rounding=10,  # <-- 新增参数
                                    debug=False,
                                    debug_dir=None,
                                    file_name=None,
@@ -357,6 +357,7 @@ def filter_boxes_by_uniform_color(boxes, image, offset_xy=(0, 0),
         tuple((np.array(c) // color_rounding * color_rounding).astype(int))
         for _, c in temp_kept
     ]
+    print (f"rounded_colors:{rounded_colors}")
     dominant_color, _ = Counter(rounded_colors).most_common(1)[0]
     print(f"Dominant mean color (rounded): {dominant_color}")
 
@@ -379,7 +380,7 @@ def filter_boxes_by_uniform_color(boxes, image, offset_xy=(0, 0),
     return kept_boxes, filtered_out_boxes
 
 
-def is_rectangle_aligned(approx, angle_tolerance=15, alignment_tolerance=5):
+def is_rectangle_aligned(approx, angle_tolerance=15, alignment_tolerance=10):
     """
     判断轮廓是否是矩形，且矩形边与图像边缘（x/y轴）对齐。
 
@@ -448,7 +449,7 @@ def obtain_legend_rectangle_bbox(main_img, legend_area, area_min_factor=0.01, ar
             item_area = w * h
             #print (f"{legend_area}:{item_area}")
             #if (1 <= aspect_ratio <= 2.5) and (legend_area * area_min_factor <= item_area <= legend_area * area_max_factor):
-            if (aspect_ratio > 1) and (legend_area * area_min_factor <= item_area <= legend_area * area_max_factor):
+            if (1<aspect_ratio <3.5) and (legend_area * area_min_factor <= item_area <= legend_area * area_max_factor):
             #if (1 <= aspect_ratio <= 2.5):
                 rectangles.append([x, y, x + w, y + h, 1.0])
     print ("Found {} candidates".format(len(rectangles)))
@@ -859,11 +860,10 @@ def process_image(image_path, output_image_path, output_txt_path, model_path,
     print(f"\n##################\nProcessing image：{image_path}")
 
     # 获取 bbox/pred_image.txt 路径（从 image_path 推导）
-    subdir_path = os.path.dirname(os.path.dirname(image_path))  # 到达 part_x_y/
-    pred_txt_path = os.path.join(subdir_path, 'bbox', 'pred_image.txt')
-
+    #subdir_path = os.path.dirname(os.path.dirname(image_path))  # 到达 part_x_y/
+    #pred_txt_path = os.path.join(subdir_path, 'bbox', 'pred_image.txt')
     # 读取 predicted text boxes（四点格式）
-    predicted_text_boxes = load_predicted_text_boxes(pred_txt_path)
+    #predicted_text_boxes = load_predicted_text_boxes(pred_txt_path)
     #print (f"text boxes: {predicted_text_boxes}")
 
     # 获取 output_dir
@@ -942,8 +942,8 @@ def process_image(image_path, output_image_path, output_txt_path, model_path,
 
                 selected = remove_overlapping_rect_simple(rectangles)
 
-                matched_pairs = find_item_boxes_with_nearby_text(selected, predicted_text_boxes, offset_xy=(x, y))
-                all_matched_pairs.extend(matched_pairs)
+                #matched_pairs = find_item_boxes_with_nearby_text(selected, predicted_text_boxes, offset_xy=(x, y))
+                #all_matched_pairs.extend(matched_pairs)
 
                 kept_boxes, filtered_boxes = filter_boxes_by_uniform_color(selected,
                                                                             image=main_img,
@@ -978,8 +978,8 @@ def process_image(image_path, output_image_path, output_txt_path, model_path,
 
         selected = remove_overlapping_rect_simple(rectangles)
 
-        matched_pairs = find_item_boxes_with_nearby_text(selected, predicted_text_boxes, offset_xy=(0, 0))
-        all_matched_pairs.extend(matched_pairs)
+        #matched_pairs = find_item_boxes_with_nearby_text(selected, predicted_text_boxes, offset_xy=(0, 0))
+        #all_matched_pairs.extend(matched_pairs)
 
         kept_boxes, filtered_boxes = filter_boxes_by_uniform_color(selected,
                                                                     image=main_img,
@@ -1096,6 +1096,8 @@ def main():
                         help="Tolerance for average border color difference (default: 25). ")
     parser.add_argument('--skip_legend', action='store_true',
                         help="If set, skip searching within legend box and directly detect items in the whole image.")
+    parser.add_argument('--debug', action='store_true',
+                        help="If set, save intermediate result.")
 
 
     args = parser.parse_args()
@@ -1130,7 +1132,7 @@ def main():
               color_test_initial_expand=args.color_test_initial_expand, color_test_border_thickness=args.color_test_border_thickness,
               color_tolerance=args.color_tolerance,
               skip_legend=args.skip_legend,
-              debug=False)
+              debug=args.debug)
 
 
 if __name__ == "__main__":
