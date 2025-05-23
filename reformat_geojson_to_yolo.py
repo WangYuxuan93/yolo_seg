@@ -4,11 +4,20 @@ import shutil
 import cv2
 import numpy as np
 from PIL import Image
+from collections import defaultdict
+from difflib import SequenceMatcher
 
-# 原始路径
-base_dir = 'data/real_geo_map/'
+def label_similarity(a, b):
+    return SequenceMatcher(None, a, b).ratio()
+
+def normalize_label(s):
+    return s.replace("、", "_").replace(",", "_").replace("，", "_").strip()
+
+# 路径设置
+base_dir = 'data/test0512'
 gold_base_dir = base_dir.rstrip('/\\') + '_gold'
 os.makedirs(gold_base_dir, exist_ok=True)
+type_counter = defaultdict(int)
 
 # 遍历子文件夹
 for folder in os.listdir(base_dir):
@@ -18,18 +27,31 @@ for folder in os.listdir(base_dir):
 
     image_path = os.path.join(folder_path, 'image', 'image.tif')
     json_path = os.path.join(folder_path, 'meta', 'Drawings.geojson')
+    legend_dir = os.path.join(folder_path, 'legend')
 
     if not os.path.exists(image_path) or not os.path.exists(json_path):
         print(f"Skipping folder {folder} due to missing files.")
         continue
 
-    # gold 路径结构
+    # 读取 legend 文件名，建立 label -> type
+    label_to_type = {}
+    if os.path.isdir(legend_dir):
+        for file in os.listdir(legend_dir):
+            if not file.lower().endswith('.tif'):
+                continue
+            name, _ = os.path.splitext(file)
+            if '_' not in name:
+                continue
+            label, label_type = name.rsplit('_', 1)
+            label = normalize_label(label)
+            label_to_type[label] = label_type
+
+    # 准备 gold 输出路径
     target_folder = os.path.join(gold_base_dir, folder)
     image_target = os.path.join(target_folder, 'image')
     meta_target = os.path.join(target_folder, 'meta')
     gold_item_dir = os.path.join(target_folder, 'gold_item')
     os.makedirs(gold_item_dir, exist_ok=True)
-
     shutil.copytree(os.path.join(folder_path, 'image'), image_target, dirs_exist_ok=True)
     shutil.copytree(os.path.join(folder_path, 'meta'), meta_target, dirs_exist_ok=True)
 
@@ -39,48 +61,85 @@ for folder in os.listdir(base_dir):
     with open(json_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
 
-    output_lines = []
-
+    geo_labels = []
     for feature in data.get('features', []):
-        if feature['properties'].get('type') != 'legend_patch':
+        props = feature.get('properties', {})
+        ftype = props.get('type') or props.get('Type') or ''
+        if ftype.lower() not in ['legend_patch', 'legend_patcg']:
             continue
+        label = props.get('label') or props.get('Label') or props.get('lable') or 'Unknown'
+        label = normalize_label(label)
+        geo_labels.append(label)
 
-        label = feature['properties'].get('label', 'Unknown').replace("\n","")
-        multipolygon = feature['geometry'].get('coordinates', [])
+    # ⚠️ 检查数量是否一致
+    if len(geo_labels) != len(label_to_type):
+        print(f"[Mismatch] Folder '{folder}': {len(geo_labels)} geojson labels vs {len(label_to_type)} legend labels")
+        #exit()
 
+    # 精确匹配 + 模糊匹配
+    label_mapping = {}
+    matched_set = set()
+    for label in geo_labels:
+        if label in label_to_type:
+            label_mapping[label] = label_to_type[label]
+            matched_set.add(label)
+        else:
+            # 模糊匹配
+            best_match, best_score = None, 0.0
+            for legend_label in label_to_type:
+                sim = label_similarity(label, legend_label)
+                if sim > best_score:
+                    best_match, best_score = legend_label, sim
+            if best_score >= 0.5:
+                label_mapping[label] = label_to_type[best_match]
+                matched_set.add(best_match)
+                #print(f"[Fuzzy Match] '{label}' → '{best_match}' ({best_score:.2f})")
+            else:
+                label_mapping[label] = "unknown"
+                print(f"[Unknown Label] folder='{folder}', label='{label}' (best match: '{best_match}' {best_score:.2f})")
+
+    # 遍历数据并生成输出
+    output_lines = []
+    for feature in data.get('features', []):
+        props = feature.get('properties', {})
+        ftype = props.get('type') or props.get('Type') or ''
+        if ftype.lower() not in ['legend_patch', 'legend_patcg']:
+            continue
+        label = props.get('label') or props.get('Label') or props.get('lable') or 'Unknown'
+        label = normalize_label(label)
+        label_type = label_mapping.get(label, "unknown")
+        type_counter[label_type] += 1
+
+        multipolygon = feature.get('geometry', {}).get('coordinates', [])
         for polygon in multipolygon:
             for ring in polygon:
                 if len(ring) < 3:
                     continue
-
-                # 去掉首尾重复点（闭合点）
                 if ring[0] == ring[-1]:
                     ring = ring[:-1]
-
-                # 检查是否为4个点
                 if len(ring) != 4:
-                    print(f"[Warning] Non-rectangle legend_patch in folder '{folder}' with label '{label}' has {len(ring)} points.")
-                    print("          Coordinates:", ring)
-                
-                # 保存输出（保留浮点数）
+                    print(f"[Warning] [{folder}] Non-rectangle legend_patch: {len(ring)} pts, label: '{label}'")
+                    print("           Coordinates:", ring)
                 coords = [f"{v:.6f}" for point in ring for v in point]
-                line = f"{label} " + ' '.join(coords)
+                line = f"{label} {label_type} " + ' '.join(coords)
                 output_lines.append(line)
 
-                # 绘制多边形（绘图仍然转 int）
                 pts = np.array([[int(round(x)), int(round(y))] for x, y in ring], dtype=np.int32)
                 cv2.polylines(image_draw, [pts], isClosed=True, color=(255, 0, 0), thickness=2)
 
-    # 保存图像
+    # 保存图像和文本
     out_img_path = os.path.join(gold_item_dir, 'gold_item_box.png')
-    Image.fromarray(image_draw).save(out_img_path)
-
-    # 保存文本
+    Image.fromarray(cv2.cvtColor(image_draw, cv2.COLOR_BGR2RGB)).save(out_img_path)
     item_txt_path = os.path.join(gold_item_dir, 'item_box.txt')
     if not output_lines:
-        print ("{} is empty".format(folder))
+        print(f"{folder} is empty")
     with open(item_txt_path, 'w', encoding='utf-8') as f:
         for line in output_lines:
             f.write(line + '\n')
 
-print("✅ 所有文件处理完成，已保存到 gold 目录中。")
+# 打印统计
+print("\n📊 各类别数量统计：")
+for label_type, count in sorted(type_counter.items()):
+    print(f"  {label_type:>8}: {count}")
+
+print("\n✅ 所有文件处理完成，已保存到 gold 目录中。")
