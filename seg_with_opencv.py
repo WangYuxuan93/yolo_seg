@@ -1004,7 +1004,8 @@ def process_image(image_path, output_image_path, output_txt_path, model_path,
     # --- 融合overlay到vis_img，产生半透明填充效果 ---
     clustered_boxes, labels, outlier_boxes, cluster_standards = filter_isolated_boxes_by_clustering_auto_eps(all_boxes, eps_scale=cluster_eps_scale, min_samples=cluster_min_samples)
 
-    recovered_boxes = recover_boxes_by_size_match(outlier_boxes+filtered_out_boxes, cluster_standards, size_tolerance=cluster_recover_size_tolerance)
+    #recovered_boxes = recover_boxes_by_size_match(outlier_boxes+filtered_out_boxes, cluster_standards, size_tolerance=cluster_recover_size_tolerance)
+    recovered_boxes = recover_boxes_by_size_match(outlier_boxes, cluster_standards, size_tolerance=cluster_recover_size_tolerance)
 
     filtered_boxes = refine_boxes_by_size_consistency(clustered_boxes, cluster_standards, size_tolerance=cluster_recover_size_tolerance)
 
@@ -1078,7 +1079,7 @@ def main():
                         help="Maximum ratio of item box area to legend area when a legend is detected (default: 0.1)")
     parser.add_argument('--global_area_min_factor', type=float, default=0.0005,
                         help="Minimum ratio of item box area to full image area when no legend is detected (default: 0.0001)")
-    parser.add_argument('--global_area_max_factor', type=float, default=0.01,
+    parser.add_argument('--global_area_max_factor', type=float, default=0.05,
                         help="Maximum ratio of item box area to full image area when no legend is detected (default: 0.01)")
     parser.add_argument('--expand_pixel', type=int, default=40,
                         help="Number of pixels to expand around the detected legend region for further processing (default: 30px)")
@@ -1092,7 +1093,7 @@ def main():
                         help="Initial number of pixels to expand each box before checking border color uniformity (default: 1)")
     parser.add_argument('--color_test_border_thickness', type=int, default=1,
                         help="Thickness of the border (in pixels) to test for color consistency around the expanded box (default: 1)")
-    parser.add_argument('--color_tolerance', type=float, default=50,
+    parser.add_argument('--color_tolerance', type=float, default=25,
                         help="Tolerance for average border color difference (default: 25). ")
     parser.add_argument('--skip_legend', action='store_true',
                         help="If set, skip searching within legend box and directly detect items in the whole image.")
@@ -1104,35 +1105,69 @@ def main():
 
     os.makedirs(args.output_dir, exist_ok=True)
 
-    subdirs = [d for d in os.listdir(args.input_dir) if os.path.isdir(os.path.join(args.input_dir, d))]
-    #subdirs = [d for d in subdirs if d.isdigit()]
+    flag = False
 
-    default_bg_color = None
-    #default_bg_color = (255, 255, 255)
+    if flag:
+        subdirs = [d for d in os.listdir(args.input_dir) if os.path.isdir(os.path.join(args.input_dir, d))]
 
-    for subdir in subdirs:
-        image_folder = os.path.join(args.input_dir, subdir, 'image')
-        tif_files = glob.glob(os.path.join(image_folder, '*.tif'))
-        if not tif_files:
-            print(f"跳过 {subdir}，没有.tif文件")
-            continue
-        image_path = tif_files[0]
+        default_bg_color = None
+        #default_bg_color = (255, 255, 255)
 
-        output_image_path = os.path.join(args.output_dir, f"{subdir}.png")
-        output_txt_path = os.path.join(args.output_dir, f"{subdir}.txt")
+        for subdir in subdirs:
+            image_folder = os.path.join(args.input_dir, subdir, 'image')
+            tif_files = glob.glob(os.path.join(image_folder, '*.tif'))
+            if not tif_files:
+                print(f"跳过 {subdir}，没有.tif文件")
+                continue
+            image_path = tif_files[0]
 
-        process_image(image_path, output_image_path, output_txt_path, args.model_path,
-              legend_area_min_factor=args.legend_area_min_factor,
-              legend_area_max_factor=args.legend_area_max_factor,
-              global_area_min_factor=args.global_area_min_factor,
-              global_area_max_factor=args.global_area_max_factor,
-              expand_pixel=args.expand_pixel,
-              cluster_eps_scale=args.cluster_eps_scale, cluster_min_samples=args.cluster_min_samples,
-              cluster_recover_size_tolerance=args.cluster_recover_size_tolerance, default_bg_color=default_bg_color,
-              color_test_initial_expand=args.color_test_initial_expand, color_test_border_thickness=args.color_test_border_thickness,
-              color_tolerance=args.color_tolerance,
-              skip_legend=args.skip_legend,
-              debug=args.debug)
+            output_image_path = os.path.join(args.output_dir, f"{subdir}.png")
+            output_txt_path = os.path.join(args.output_dir, f"{subdir}.txt")
+
+            process_image(image_path, output_image_path, output_txt_path, args.model_path,
+                  legend_area_min_factor=args.legend_area_min_factor,
+                  legend_area_max_factor=args.legend_area_max_factor,
+                  global_area_min_factor=args.global_area_min_factor,
+                  global_area_max_factor=args.global_area_max_factor,
+                  expand_pixel=args.expand_pixel,
+                  cluster_eps_scale=args.cluster_eps_scale, cluster_min_samples=args.cluster_min_samples,
+                  cluster_recover_size_tolerance=args.cluster_recover_size_tolerance, default_bg_color=default_bg_color,
+                  color_test_initial_expand=args.color_test_initial_expand, color_test_border_thickness=args.color_test_border_thickness,
+                  color_tolerance=args.color_tolerance,
+                  skip_legend=args.skip_legend,
+                  debug=args.debug)
+
+    else:
+        # 获取输入目录下的所有.png文件
+        image_files = glob.glob(os.path.join(args.input_dir, '*.png'))
+
+        default_bg_color = None  # or set to (255, 255, 255)
+
+        for image_path in image_files:
+            # 获取文件名（不含扩展名），作为输出文件名的前缀
+            filename = os.path.splitext(os.path.basename(image_path))[0]
+
+            output_image_path = os.path.join(args.output_dir, f"{filename}.png")
+            output_txt_path = os.path.join(args.output_dir, f"{filename}.txt")
+
+            process_image(
+                image_path, output_image_path, output_txt_path, args.model_path,
+                legend_area_min_factor=args.legend_area_min_factor,
+                legend_area_max_factor=args.legend_area_max_factor,
+                global_area_min_factor=args.global_area_min_factor,
+                global_area_max_factor=args.global_area_max_factor,
+                expand_pixel=args.expand_pixel,
+                cluster_eps_scale=args.cluster_eps_scale,
+                cluster_min_samples=args.cluster_min_samples,
+                cluster_recover_size_tolerance=args.cluster_recover_size_tolerance,
+                default_bg_color=default_bg_color,
+                color_test_initial_expand=args.color_test_initial_expand,
+                color_test_border_thickness=args.color_test_border_thickness,
+                color_tolerance=args.color_tolerance,
+                skip_legend=args.skip_legend,
+                debug=args.debug)
+
+
 
 
 if __name__ == "__main__":
