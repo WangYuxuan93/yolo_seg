@@ -127,24 +127,41 @@ def is_box_surrounded_by_uniform_color(image, box, initial_expand=1, border_thic
     x2_outer = min(x2_ext + border_thickness, w - 1)
     y2_outer = min(y2_ext + border_thickness, h - 1)
 
-    # 四个边区域
-    top = image[y1_outer:y1_ext, x1_outer:x2_outer]
-    bottom = image[y2_ext:y2_outer, x1_outer:x2_outer]
-    left = image[y1_outer:y2_outer, x1_outer:x1_ext]
-    right = image[y1_outer:y2_outer, x2_ext:x2_outer]
+    edge_blocks = []
+    label_list = []
+    img_list = []
 
-    if any(arr.size == 0 for arr in [top, bottom, left, right]):
+    if y1_ext > y1_outer:
+        top = image[y1_outer:y1_ext, x1_outer:x2_outer]
+        if top.size > 0:
+            edge_blocks.append(top.reshape(-1, 3))
+            label_list.append("TOP")
+            img_list.append(top)
+    if y2_outer > y2_ext:
+        bottom = image[y2_ext:y2_outer, x1_outer:x2_outer]
+        if bottom.size > 0:
+            edge_blocks.append(bottom.reshape(-1, 3))
+            label_list.append("BOTTOM")
+            img_list.append(bottom)
+    if x1_ext > x1_outer:
+        left = image[y1_outer:y2_outer, x1_outer:x1_ext]
+        if left.size > 0:
+            edge_blocks.append(left.reshape(-1, 3))
+            label_list.append("LEFT")
+            img_list.append(left)
+    if x2_outer > x2_ext:
+        right = image[y1_outer:y2_outer, x2_ext:x2_outer]
+        if right.size > 0:
+            edge_blocks.append(right.reshape(-1, 3))
+            label_list.append("RIGHT")
+            img_list.append(right)
+
+    if not edge_blocks:
         return False, None
 
-    # 提取边缘所有像素
-    border_pixels = np.concatenate([
-        top.reshape(-1, 3),
-        bottom.reshape(-1, 3),
-        left.reshape(-1, 3),
-        right.reshape(-1, 3)
-    ], axis=0)
+    border_pixels = np.concatenate(edge_blocks, axis=0)
 
-    # 判断颜色一致性（使用默认颜色或平均值）
+    # 判断颜色一致性
     if default_bg_color is not None:
         ref_color = np.array(default_bg_color)
         color_diff = np.linalg.norm(border_pixels - ref_color, axis=1)
@@ -160,31 +177,23 @@ def is_box_surrounded_by_uniform_color(image, box, initial_expand=1, border_thic
     if debug_dir and index is not None:
         os.makedirs(debug_dir, exist_ok=True)
 
-        label_list = ["TOP", "BOTTOM", "LEFT", "RIGHT", "ITEM"]
-        img_list = [
-            top,
-            bottom,
-            left,
-            right,
-            image[y1:y2, x1:x2]
-        ]
-
-        label_height = 20
         font = cv2.FONT_HERSHEY_SIMPLEX
         font_scale = 0.4
         font_thickness = 1
+        label_height = 20
         min_visual_width = 40
+
+        img_list.append(image[y1:y2, x1:x2])
+        label_list.append("ITEM")
 
         labeled_blocks = []
         max_height = 0
 
         for label, img in zip(label_list, img_list):
             safe_img = img if img.size != 0 else np.full((30, 30, 3), 255, dtype=np.uint8)
-
             bordered_img = cv2.copyMakeBorder(
                 safe_img, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=(180, 180, 180)
             )
-
             h, w = bordered_img.shape[:2]
 
             if w < min_visual_width:
@@ -218,8 +227,8 @@ def is_box_surrounded_by_uniform_color(image, box, initial_expand=1, border_thic
             resized_blocks.append(resized_block)
 
         debug_image = np.hstack(resized_blocks)
-
         annotated = debug_image.copy()
+
         ref_r, ref_g, ref_b = [int(x) for x in ref_color]
         text_lines = [
             f"Reference RGB: ({ref_r}, {ref_g}, {ref_b})",
@@ -237,21 +246,24 @@ def is_box_surrounded_by_uniform_color(image, box, initial_expand=1, border_thic
 
     return result, ref_color
 
+
 """
 def filter_boxes_by_uniform_color(boxes, image, offset_xy=(0, 0),
                                    initial_expand=1,
                                    border_thickness=1,
                                    default_bg_color=None,
                                    color_tolerance=15,
+                                   color_rounding=10,  # <-- 新增参数
                                    debug=False,
                                    debug_dir=None,
                                    file_name=None,
                                    legend_counter=None,
                                    start_index=0):
-    print ("\n[Color] Filtering boxes by surrounded color")
+
+    print("\n[Color] Filtering boxes by surrounded color")
 
     x_offset, y_offset = offset_xy
-    kept_boxes = []
+    temp_kept = []  # [(points, mean_color)]
     filtered_out_boxes = []
 
     for i, rect in enumerate(boxes):
@@ -266,7 +278,7 @@ def filter_boxes_by_uniform_color(boxes, image, offset_xy=(0, 0),
             (x_offset + x1, y_offset + y2)
         ]
 
-        passed = is_box_surrounded_by_uniform_color(
+        passed, mean_color = is_box_surrounded_by_uniform_color(
             image, adjusted_rect,
             initial_expand=initial_expand,
             border_thickness=border_thickness,
@@ -278,12 +290,38 @@ def filter_boxes_by_uniform_color(boxes, image, offset_xy=(0, 0),
         )
 
         if passed:
-            kept_boxes.append(points)
+            temp_kept.append((points, mean_color))
         else:
             filtered_out_boxes.append(points)
 
-    print ("Background Color: {}".format("Mean" if default_bg_color is None else default_bg_color))
-    print ("Input: {}, Output: {}".format(len(boxes), len(kept_boxes)))
+    if not temp_kept:
+        print("No box passed initial uniform color check.")
+        return [], filtered_out_boxes
+
+    # 统计 dominant mean color（分桶简化）
+    rounded_colors = [
+        tuple((np.array(c) // color_rounding * color_rounding).astype(int))
+        for _, c in temp_kept
+    ]
+    print (f"rounded_colors:{rounded_colors}")
+    dominant_color, _ = Counter(rounded_colors).most_common(1)[0]
+    print(f"Dominant mean color (rounded): {dominant_color}")
+
+    # 筛选颜色接近 dominant color 的 box
+    kept_boxes = []
+    refined_filtered_out = []
+
+    for (points, mean_color) in temp_kept:
+        diff = np.linalg.norm(np.array(mean_color) - np.array(dominant_color))
+        if diff <= color_tolerance:
+            kept_boxes.append(points)
+        else:
+            refined_filtered_out.append(points)
+
+    filtered_out_boxes.extend(refined_filtered_out)
+
+    #print(f"Background Color: {dominant_color}")
+    print(f"Input: {len(boxes)}, After initial pass: {len(temp_kept)}, Final kept: {len(kept_boxes)}")
 
     return kept_boxes, filtered_out_boxes
 """
@@ -352,32 +390,107 @@ def filter_boxes_by_uniform_color(boxes, image, offset_xy=(0, 0),
         print("No box passed initial uniform color check.")
         return [], filtered_out_boxes
 
-    # 统计 dominant mean color（分桶简化）
-    rounded_colors = [
-        tuple((np.array(c) // color_rounding * color_rounding).astype(int))
-        for _, c in temp_kept
-    ]
-    print (f"rounded_colors:{rounded_colors}")
-    dominant_color, _ = Counter(rounded_colors).most_common(1)[0]
-    print(f"Dominant mean color (rounded): {dominant_color}")
+    print(f"Input: {len(boxes)}, Output: {len(temp_kept)}")
 
-    # 筛选颜色接近 dominant color 的 box
-    kept_boxes = []
-    refined_filtered_out = []
+    return [points for points, color in temp_kept], filtered_out_boxes
 
-    for (points, mean_color) in temp_kept:
-        diff = np.linalg.norm(np.array(mean_color) - np.array(dominant_color))
-        if diff <= color_tolerance:
-            kept_boxes.append(points)
+
+def filter_by_dominant_edge_color(image, boxes, labels, color_tolerance=15, bucket_size=5,
+                                   initial_expand=1, border_thickness=1):
+    """
+    对聚类后的 box 根据 dominant edge color 进行筛除（返回原始四点格式的 box）
+
+    参数：
+    - image: 原图 (BGR)
+    - boxes: 每个 box 为 [(x1,y1), ...] 四个点
+    - labels: 聚类标签
+    - color_tolerance: 与聚类 dominant color 的容差
+    - bucket_size: 颜色离散桶大小
+    - initial_expand, border_thickness: 边缘扩展参数
+
+    返回：
+    - kept_boxes: 保留的原始四点 box
+    - kept_labels: 对应 label
+    - removed_boxes: 被剔除的原始四点 box
+    """
+
+    def round_color(color, bucket=5):
+        return tuple((np.array(color) // bucket * bucket).astype(int))
+
+    def to_rect_from_points(box):
+        xs = [p[0] for p in box]
+        ys = [p[1] for p in box]
+        return [int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys)), 1.0]
+
+    def get_edge_mean_color(img, rect_box, init_expand=1, border_thick=1):
+        x1, y1, x2, y2, *_ = rect_box
+        h, w = img.shape[:2]
+        x1_ext = max(x1 - init_expand, 0)
+        y1_ext = max(y1 - init_expand, 0)
+        x2_ext = min(x2 + init_expand, w - 1)
+        y2_ext = min(y2 + init_expand, h - 1)
+        x1_outer = max(x1_ext - border_thick, 0)
+        y1_outer = max(y1_ext - border_thick, 0)
+        x2_outer = min(x2_ext + border_thick, w - 1)
+        y2_outer = min(y2_ext + border_thick, h - 1)
+
+        edge_blocks = []
+        if y1_ext > y1_outer:
+            top = img[y1_outer:y1_ext, x1_outer:x2_outer]
+            if top.size > 0:
+                edge_blocks.append(top.reshape(-1, 3))
+        if y2_outer > y2_ext:
+            bottom = img[y2_ext:y2_outer, x1_outer:x2_outer]
+            if bottom.size > 0:
+                edge_blocks.append(bottom.reshape(-1, 3))
+        if x1_ext > x1_outer:
+            left = img[y1_outer:y2_outer, x1_outer:x1_ext]
+            if left.size > 0:
+                edge_blocks.append(left.reshape(-1, 3))
+        if x2_outer > x2_ext:
+            right = img[y1_outer:y2_outer, x2_ext:x2_outer]
+            if right.size > 0:
+                edge_blocks.append(right.reshape(-1, 3))
+
+        if not edge_blocks:
+            return None
+        border_pixels = np.concatenate(edge_blocks, axis=0)
+        return np.mean(border_pixels, axis=0)
+
+    # Step 1: 提取边缘颜色，绑定原始 box
+    box_data = []  # [(original_box, label, mean_color)]
+    for box, label in zip(boxes, labels):
+        rect = to_rect_from_points(box)
+        mean_color = get_edge_mean_color(image, rect, initial_expand, border_thickness)
+        box_data.append((box, label, mean_color))
+
+    # Step 2: 每个 cluster 的 dominant color
+    cluster_colors = defaultdict(list)
+    for box, label, color in box_data:
+        if color is not None and label != -1:
+            cluster_colors[label].append(round_color(color, bucket_size))
+
+    cluster_dominant = {
+        label: Counter(colors).most_common(1)[0][0]
+        for label, colors in cluster_colors.items()
+    }
+
+    # Step 3: 判断颜色一致性
+    kept_boxes, kept_labels, removed_boxes = [], [], []
+    for box, label, color in box_data:
+        if label == -1 or color is None:
+            removed_boxes.append(box)
+            continue
+        dom_color = np.array(cluster_dominant[label])
+        dist = np.linalg.norm(color - dom_color)
+        if dist <= color_tolerance:
+            kept_boxes.append(box)
+            kept_labels.append(label)
         else:
-            refined_filtered_out.append(points)
+            removed_boxes.append(box)
 
-    filtered_out_boxes.extend(refined_filtered_out)
-
-    #print(f"Background Color: {dominant_color}")
-    print(f"Input: {len(boxes)}, After initial pass: {len(temp_kept)}, Final kept: {len(kept_boxes)}")
-
-    return kept_boxes, filtered_out_boxes
+    print(f"\n[Cluster Color Filter] Input: {len(boxes)}, Output: {len(kept_boxes)}")
+    return kept_boxes, kept_labels, removed_boxes
 
 
 def is_rectangle_aligned(approx, angle_tolerance=15, alignment_tolerance=10):
@@ -421,18 +534,23 @@ def is_rectangle_aligned(approx, angle_tolerance=15, alignment_tolerance=10):
     return is_rectangular and is_axis_aligned
 
 
-def obtain_legend_rectangle_bbox(main_img, legend_area, area_min_factor=0.01, area_max_factor=0.5, binary_image_filename=None):
+def obtain_legend_rectangle_bbox(main_img, legend_area,
+                                 area_min_factor=0.01, area_max_factor=0.5,
+                                 binary_image_filename=None,
+                                 contour_image_filename=None):
     print(f"\n[Search] Searching candidate item boxes")
     target_img = np.array(main_img)
     target_img = cv2.cvtColor(target_img, cv2.COLOR_BGR2GRAY)
 
+    # 自适应二值化
     blur = cv2.GaussianBlur(target_img, (5, 5), 0)
-    thresh = cv2.adaptiveThreshold(blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                   cv2.THRESH_BINARY_INV, 5, 1)
+    thresh = cv2.adaptiveThreshold(
+        blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY_INV, 5, 1
+    )
 
-    # 保存二值化图像到传入的路径
     if binary_image_filename is not None:
-        cv2.imwrite(binary_image_filename, thresh)  # 保存二值化图像
+        cv2.imwrite(binary_image_filename, thresh)
         print(f"Binary image saved to: {binary_image_filename}")
 
     contours, _ = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
@@ -443,16 +561,35 @@ def obtain_legend_rectangle_bbox(main_img, legend_area, area_min_factor=0.01, ar
         approx = cv2.approxPolyDP(contour, epsilon, True)
 
         if len(approx) == 4 and is_rectangle_aligned(approx):
-        #if True:
             x, y, w, h = cv2.boundingRect(approx)
             aspect_ratio = w / h
             item_area = w * h
-            #print (f"{legend_area}:{item_area}")
-            #if (1 <= aspect_ratio <= 2.5) and (legend_area * area_min_factor <= item_area <= legend_area * area_max_factor):
-            if (1<aspect_ratio <3.5) and (legend_area * area_min_factor <= item_area <= legend_area * area_max_factor):
-            #if (1 <= aspect_ratio <= 2.5):
+            if (1 < aspect_ratio < 3.5) and (legend_area * area_min_factor <= item_area <= legend_area * area_max_factor):
+            #if (legend_area * area_min_factor <= item_area <= legend_area * area_max_factor):
                 rectangles.append([x, y, x + w, y + h, 1.0])
-    print ("Found {} candidates".format(len(rectangles)))
+
+    print("Found {} candidates".format(len(rectangles)))
+
+    # 可视化未通过筛选的原始轮廓
+    if contour_image_filename is not None:
+        debug_img = main_img.copy()
+
+        for contour in contours:
+            epsilon = 0.02 * cv2.arcLength(contour, True)
+            approx = cv2.approxPolyDP(contour, epsilon, True)
+
+            if len(approx) == 4 and is_rectangle_aligned(approx):
+                x, y, w, h = cv2.boundingRect(approx)
+                aspect_ratio = w / h
+                item_area = w * h
+                #if (1.1 < aspect_ratio < 3.5) and (legend_area * area_min_factor <= item_area <= legend_area * area_max_factor):
+                #    continue  # 通过筛选的跳过
+
+                # 不通过的原始轮廓画红色线
+                cv2.drawContours(debug_img, [contour], -1, (0, 0, 255), 1)
+
+        cv2.imwrite(contour_image_filename, debug_img)
+        print(f"Debug image with raw contours saved to: {contour_image_filename}")
 
     return rectangles
 
@@ -881,9 +1018,10 @@ def process_image(image_path, output_image_path, output_txt_path, model_path,
     vis_img = main_img.copy()
     overlay = vis_img.copy()  # 用来画半透明区域
 
-    predictions = predict_image_segmentation(main_img, model_path=model_path, smooth_contours=False,
-                                              epsilon_factor=0.002,
-                                              merge_same_class_boxes=False)
+    if not skip_legend:
+        predictions = predict_image_segmentation(main_img, model_path=model_path, smooth_contours=False,
+                                                  epsilon_factor=0.002,
+                                                  merge_same_class_boxes=False)
     all_boxes = []
     found_legend = False
     legend_counter = 0  # 用于编号
@@ -933,12 +1071,14 @@ def process_image(image_path, output_image_path, output_txt_path, model_path,
 
                 # 构建文件名并传递到函数中
                 binary_image_filename = os.path.join(output_dir, f"{image_base_name}_{legend_counter}_binary.png")
+                contour_image_filename = os.path.join(output_dir, f"{image_base_name}_{legend_counter}_contour.png")
                 
                 # 保存二值化图像
                 rectangles = obtain_legend_rectangle_bbox(legend_crop, legend_area,
                                                             area_min_factor=legend_area_min_factor,
                                                             area_max_factor=legend_area_max_factor,
-                                                            binary_image_filename=binary_image_filename)
+                                                            binary_image_filename=binary_image_filename,
+                                                            contour_image_filename=contour_image_filename)
 
                 selected = remove_overlapping_rect_simple(rectangles)
 
@@ -973,7 +1113,8 @@ def process_image(image_path, output_image_path, output_txt_path, model_path,
         rectangles = obtain_legend_rectangle_bbox(legend_crop, legend_area,
                                                     area_min_factor=global_area_min_factor,
                                                     area_max_factor=global_area_max_factor,
-                                                    binary_image_filename=os.path.join(output_dir, f"{image_base_name}_legend_binary.png")
+                                                    binary_image_filename=os.path.join(output_dir, f"{image_base_name}_legend_binary.png"),
+                                                    contour_image_filename=os.path.join(output_dir, f"{image_base_name}_contour.png")
                                                     )
 
         selected = remove_overlapping_rect_simple(rectangles)
@@ -1004,10 +1145,18 @@ def process_image(image_path, output_image_path, output_txt_path, model_path,
     # --- 融合overlay到vis_img，产生半透明填充效果 ---
     clustered_boxes, labels, outlier_boxes, cluster_standards = filter_isolated_boxes_by_clustering_auto_eps(all_boxes, eps_scale=cluster_eps_scale, min_samples=cluster_min_samples)
 
-    #recovered_boxes = recover_boxes_by_size_match(outlier_boxes+filtered_out_boxes, cluster_standards, size_tolerance=cluster_recover_size_tolerance)
-    recovered_boxes = recover_boxes_by_size_match(outlier_boxes, cluster_standards, size_tolerance=cluster_recover_size_tolerance)
+    kept_boxes, kept_labels, removed_by_color = filter_by_dominant_edge_color(image=main_img,
+                                                                                boxes=clustered_boxes,
+                                                                                labels=labels,
+                                                                                color_tolerance=color_tolerance,
+                                                                                bucket_size=5,
+                                                                                initial_expand=color_test_initial_expand,
+                                                                                border_thickness=color_test_border_thickness)
 
-    filtered_boxes = refine_boxes_by_size_consistency(clustered_boxes, cluster_standards, size_tolerance=cluster_recover_size_tolerance)
+    recovered_boxes = recover_boxes_by_size_match(outlier_boxes+filtered_out_boxes+removed_by_color, cluster_standards, size_tolerance=cluster_recover_size_tolerance)
+    #recovered_boxes = recover_boxes_by_size_match(outlier_boxes, cluster_standards, size_tolerance=cluster_recover_size_tolerance)
+
+    filtered_boxes = refine_boxes_by_size_consistency(kept_boxes, cluster_standards, size_tolerance=cluster_recover_size_tolerance)
 
     all_boxes = filtered_boxes + recovered_boxes
     #print (all_boxes)
@@ -1077,7 +1226,7 @@ def main():
                         help="Minimum ratio of item box area to legend area when a legend is detected (default: 0.001)")
     parser.add_argument('--legend_area_max_factor', type=float, default=0.1,
                         help="Maximum ratio of item box area to legend area when a legend is detected (default: 0.1)")
-    parser.add_argument('--global_area_min_factor', type=float, default=0.0005,
+    parser.add_argument('--global_area_min_factor', type=float, default=0.0001,
                         help="Minimum ratio of item box area to full image area when no legend is detected (default: 0.0001)")
     parser.add_argument('--global_area_max_factor', type=float, default=0.05,
                         help="Maximum ratio of item box area to full image area when no legend is detected (default: 0.01)")
@@ -1093,7 +1242,7 @@ def main():
                         help="Initial number of pixels to expand each box before checking border color uniformity (default: 1)")
     parser.add_argument('--color_test_border_thickness', type=int, default=1,
                         help="Thickness of the border (in pixels) to test for color consistency around the expanded box (default: 1)")
-    parser.add_argument('--color_tolerance', type=float, default=25,
+    parser.add_argument('--color_tolerance', type=float, default=50,
                         help="Tolerance for average border color difference (default: 25). ")
     parser.add_argument('--skip_legend', action='store_true',
                         help="If set, skip searching within legend box and directly detect items in the whole image.")
@@ -1105,7 +1254,7 @@ def main():
 
     os.makedirs(args.output_dir, exist_ok=True)
 
-    flag = False
+    flag = True
 
     if flag:
         subdirs = [d for d in os.listdir(args.input_dir) if os.path.isdir(os.path.join(args.input_dir, d))]

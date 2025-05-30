@@ -106,6 +106,7 @@ def main(pred_dir, gold_dir, output_json_path, iou_threshold):
     all_pred_polys = []
     all_gold_polys = []
 
+
     for pred_txt in glob.glob(os.path.join(pred_dir, '*.txt')):
         name = os.path.splitext(os.path.basename(pred_txt))[0]
         gold_txt = os.path.join(gold_dir, name, 'gold_item', 'item_box.txt')
@@ -162,6 +163,6 @@ if __name__ == '__main__':
     parser.add_argument('--pred_dir', type=str, required=True, help="Path to prediction .txt files")
     parser.add_argument('--gold_dir', type=str, required=True, help="Path to gold labeled folders")
     parser.add_argument('--output_json', type=str, default='iou_results.json', help="Path to output JSON file")
-    parser.add_argument('--iou_threshold', type=float, default=0.9, help="IoU threshold for box-level precision/recall/F1")
+    parser.add_argument('--iou_threshold', type=float, default=0.8, help="IoU threshold for box-level precision/recall/F1")
     args = parser.parse_args()
     main(args.pred_dir, args.gold_dir, args.output_json, args.iou_threshold)
