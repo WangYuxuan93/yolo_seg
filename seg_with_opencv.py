@@ -109,6 +109,150 @@ def predict_image_segmentation(image: np.ndarray, model_path: str,
     return (predictions, vis_img) if return_vis else predictions
 
 
+def is_rectangle_aligned(approx, angle_tolerance=15, alignment_tolerance=10):
+    """
+    判断轮廓是否是矩形，且矩形边与图像边缘（x/y轴）对齐。
+
+    参数：
+    - approx: cv2.approxPolyDP 输出的 4 点轮廓
+    - angle_tolerance: 判断矩形角度偏差容忍度（默认 ±15°）
+    - alignment_tolerance: 边方向与水平/垂直的容忍度（默认 ±10°）
+
+    返回：
+    - True 表示是对齐矩形，False 表示不是
+    """
+    def angle_between(v1, v2):
+        cos_theta = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
+        cos_theta = np.clip(cos_theta, -1.0, 1.0)
+        return np.degrees(np.arccos(cos_theta))
+
+    def classify_alignment(vec):
+        angle = np.degrees(np.arctan2(vec[1], vec[0]))  # 与 x 轴夹角 [-180, 180]
+        angle = abs(angle)  # 考虑角度对称性
+        if angle <= alignment_tolerance or abs(angle - 180) <= alignment_tolerance:
+            return 'horizontal'
+        elif abs(angle - 90) <= alignment_tolerance:
+            return 'vertical'
+        else:
+            return 'diagonal'
+
+    pts = approx.reshape(4, 2)
+    vectors = [pts[(i + 1) % 4] - pts[i] for i in range(4)]
+
+    # 是否是矩形（角度近似90°）
+    angles = [angle_between(vectors[i], vectors[(i + 1) % 4]) for i in range(4)]
+    is_rectangular = all(abs(a - 90) <= angle_tolerance for a in angles)
+
+    # 判断边方向（是否水平/垂直）
+    alignments = [classify_alignment(v) for v in vectors]
+    is_axis_aligned = alignments.count('horizontal') == 2 and alignments.count('vertical') == 2
+
+    return is_rectangular and is_axis_aligned
+
+
+def obtain_legend_rectangle_bbox(main_img, legend_area,
+                                 area_min_factor=0.01, area_max_factor=0.5,
+                                 binary_image_filename=None,
+                                 contour_image_filename=None):
+    print(f"\n[Search] Searching candidate item boxes")
+    target_img = np.array(main_img)
+    target_img = cv2.cvtColor(target_img, cv2.COLOR_BGR2GRAY)
+
+    # 自适应二值化
+    blur = cv2.GaussianBlur(target_img, (5, 5), 0)
+    thresh = cv2.adaptiveThreshold(
+        blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY_INV, 5, 1
+    )
+
+    # 尝试闭运算以增强连通性
+    #kernel = np.ones((3, 3), np.uint8)
+    #thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+
+    if binary_image_filename is not None:
+        cv2.imwrite(binary_image_filename, thresh)
+        print(f"Binary image saved to: {binary_image_filename}")
+
+    contours, _ = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+
+    rectangles = []
+    for contour in contours:
+        epsilon = 0.02 * cv2.arcLength(contour, True)
+        approx = cv2.approxPolyDP(contour, epsilon, True)
+
+        if len(approx) == 4 and is_rectangle_aligned(approx):
+            x, y, w, h = cv2.boundingRect(approx)
+            aspect_ratio = w / h
+            item_area = w * h
+            if (0.9 < aspect_ratio < 3.5) and (legend_area * area_min_factor <= item_area <= legend_area * area_max_factor):
+            #if (legend_area * area_min_factor <= item_area <= legend_area * area_max_factor):
+                rectangles.append([x, y, x + w, y + h, 1.0])
+
+    print("Found {} candidates".format(len(rectangles)))
+
+    # 可视化未通过筛选的原始轮廓
+    if contour_image_filename is not None:
+        debug_img = main_img.copy()
+
+        for contour in contours:
+            epsilon = 0.02 * cv2.arcLength(contour, True)
+            approx = cv2.approxPolyDP(contour, epsilon, True)
+
+            if len(approx) == 4 and is_rectangle_aligned(approx):
+                x, y, w, h = cv2.boundingRect(approx)
+                aspect_ratio = w / h
+                item_area = w * h
+                #if (1.1 < aspect_ratio < 3.5) and (legend_area * area_min_factor <= item_area <= legend_area * area_max_factor):
+                #    continue  # 通过筛选的跳过
+
+                # 不通过的原始轮廓画红色线
+                cv2.drawContours(debug_img, [contour], -1, (0, 0, 255), 1)
+
+        cv2.imwrite(contour_image_filename, debug_img)
+        print(f"Debug image with raw contours saved to: {contour_image_filename}")
+
+    return rectangles
+
+
+from itertools import combinations
+
+def remove_boxes_with_small_edge_distance(boxes, min_distance=1):
+    """
+    移除任意两个 box 之间边缘距离小于 min_distance 的所有 box。
+    box 是 4 点形式的 list。
+    """
+    def box_edge_distance(box1, box2):
+        """
+        计算两个 box 之间的最小边缘距离，box 是 4 个点的 list。
+        """
+        pts1 = np.array(box1)
+        pts2 = np.array(box2)
+
+        # 获取两个 box 的边界框坐标 [x_min, y_min, x_max, y_max]
+        x1_min, y1_min = np.min(pts1, axis=0)
+        x1_max, y1_max = np.max(pts1, axis=0)
+
+        x2_min, y2_min = np.min(pts2, axis=0)
+        x2_max, y2_max = np.max(pts2, axis=0)
+
+        # 计算水平和垂直方向的边缘距离（不重叠为正值）
+        dx = max(x1_min - x2_max, x2_min - x1_max, 0)
+        dy = max(y1_min - y2_max, y2_min - y1_max, 0)
+
+        return np.hypot(dx, dy)
+
+    to_remove = set()
+    for i, j in combinations(range(len(boxes)), 2):
+        dist = box_edge_distance(boxes[i], boxes[j])
+        if dist < min_distance:
+            to_remove.add(i)
+            to_remove.add(j)
+    
+    filtered_boxes = [box for idx, box in enumerate(boxes) if idx not in to_remove]
+    print (f"\n[Distance] Input: {len(boxes)}, Output: {len(filtered_boxes)}")
+    return filtered_boxes
+
+
 def is_box_surrounded_by_uniform_color(image, box, initial_expand=1, border_thickness=1,
                                        color_tolerance=15, default_bg_color=None, 
                                        debug_dir=None, file_name=None, index=None):
@@ -247,86 +391,6 @@ def is_box_surrounded_by_uniform_color(image, box, initial_expand=1, border_thic
     return result, ref_color
 
 
-"""
-def filter_boxes_by_uniform_color(boxes, image, offset_xy=(0, 0),
-                                   initial_expand=1,
-                                   border_thickness=1,
-                                   default_bg_color=None,
-                                   color_tolerance=15,
-                                   color_rounding=10,  # <-- 新增参数
-                                   debug=False,
-                                   debug_dir=None,
-                                   file_name=None,
-                                   legend_counter=None,
-                                   start_index=0):
-
-    print("\n[Color] Filtering boxes by surrounded color")
-
-    x_offset, y_offset = offset_xy
-    temp_kept = []  # [(points, mean_color)]
-    filtered_out_boxes = []
-
-    for i, rect in enumerate(boxes):
-        rec_id = start_index + i + 1
-        x1, y1, x2, y2, score = rect
-        adjusted_rect = [x_offset + x1, y_offset + y1, x_offset + x2, y_offset + y2, score]
-
-        points = [
-            (x_offset + x1, y_offset + y1),
-            (x_offset + x2, y_offset + y1),
-            (x_offset + x2, y_offset + y2),
-            (x_offset + x1, y_offset + y2)
-        ]
-
-        passed, mean_color = is_box_surrounded_by_uniform_color(
-            image, adjusted_rect,
-            initial_expand=initial_expand,
-            border_thickness=border_thickness,
-            default_bg_color=default_bg_color,
-            color_tolerance=color_tolerance,
-            debug_dir=debug_dir if debug else None,
-            file_name=f"{file_name}_{legend_counter}" if legend_counter is not None else file_name,
-            index=rec_id
-        )
-
-        if passed:
-            temp_kept.append((points, mean_color))
-        else:
-            filtered_out_boxes.append(points)
-
-    if not temp_kept:
-        print("No box passed initial uniform color check.")
-        return [], filtered_out_boxes
-
-    # 统计 dominant mean color（分桶简化）
-    rounded_colors = [
-        tuple((np.array(c) // color_rounding * color_rounding).astype(int))
-        for _, c in temp_kept
-    ]
-    print (f"rounded_colors:{rounded_colors}")
-    dominant_color, _ = Counter(rounded_colors).most_common(1)[0]
-    print(f"Dominant mean color (rounded): {dominant_color}")
-
-    # 筛选颜色接近 dominant color 的 box
-    kept_boxes = []
-    refined_filtered_out = []
-
-    for (points, mean_color) in temp_kept:
-        diff = np.linalg.norm(np.array(mean_color) - np.array(dominant_color))
-        if diff <= color_tolerance:
-            kept_boxes.append(points)
-        else:
-            refined_filtered_out.append(points)
-
-    filtered_out_boxes.extend(refined_filtered_out)
-
-    #print(f"Background Color: {dominant_color}")
-    print(f"Input: {len(boxes)}, After initial pass: {len(temp_kept)}, Final kept: {len(kept_boxes)}")
-
-    return kept_boxes, filtered_out_boxes
-"""
-
-
 def filter_boxes_by_uniform_color(boxes, image, offset_xy=(0, 0),
                                    initial_expand=1,
                                    border_thickness=1,
@@ -396,7 +460,7 @@ def filter_boxes_by_uniform_color(boxes, image, offset_xy=(0, 0),
 
 
 def filter_by_dominant_edge_color(image, boxes, labels, color_tolerance=15, bucket_size=5,
-                                   initial_expand=1, border_thickness=1):
+                                   initial_expand=1, border_thickness=1, debug_dir=None, file_name="debug"):
     """
     对聚类后的 box 根据 dominant edge color 进行筛除（返回原始四点格式的 box）
 
@@ -407,12 +471,20 @@ def filter_by_dominant_edge_color(image, boxes, labels, color_tolerance=15, buck
     - color_tolerance: 与聚类 dominant color 的容差
     - bucket_size: 颜色离散桶大小
     - initial_expand, border_thickness: 边缘扩展参数
+    - debug_dir: 如果指定路径，则保存被过滤掉的 box 的调试图
+    - file_name: 调试图片文件名前缀
 
     返回：
     - kept_boxes: 保留的原始四点 box
     - kept_labels: 对应 label
     - removed_boxes: 被剔除的原始四点 box
     """
+    import cv2
+    import numpy as np
+    import os
+    from collections import defaultdict, Counter
+
+    print(f"\n[Cluster Color Filter]")
 
     def round_color(color, bucket=5):
         return tuple((np.array(color) // bucket * bucket).astype(int))
@@ -422,176 +494,183 @@ def filter_by_dominant_edge_color(image, boxes, labels, color_tolerance=15, buck
         ys = [p[1] for p in box]
         return [int(min(xs)), int(min(ys)), int(max(xs)), int(max(ys)), 1.0]
 
-    def get_edge_mean_color(img, rect_box, init_expand=1, border_thick=1):
-        x1, y1, x2, y2, *_ = rect_box
-        h, w = img.shape[:2]
-        x1_ext = max(x1 - init_expand, 0)
-        y1_ext = max(y1 - init_expand, 0)
-        x2_ext = min(x2 + init_expand, w - 1)
-        y2_ext = min(y2 + init_expand, h - 1)
-        x1_outer = max(x1_ext - border_thick, 0)
-        y1_outer = max(y1_ext - border_thick, 0)
-        x2_outer = min(x2_ext + border_thick, w - 1)
-        y2_outer = min(y2_ext + border_thick, h - 1)
+    os.makedirs(debug_dir, exist_ok=True) if debug_dir else None
 
-        edge_blocks = []
-        if y1_ext > y1_outer:
-            top = img[y1_outer:y1_ext, x1_outer:x2_outer]
-            if top.size > 0:
-                edge_blocks.append(top.reshape(-1, 3))
-        if y2_outer > y2_ext:
-            bottom = img[y2_ext:y2_outer, x1_outer:x2_outer]
-            if bottom.size > 0:
-                edge_blocks.append(bottom.reshape(-1, 3))
-        if x1_ext > x1_outer:
-            left = img[y1_outer:y2_outer, x1_outer:x1_ext]
-            if left.size > 0:
-                edge_blocks.append(left.reshape(-1, 3))
-        if x2_outer > x2_ext:
-            right = img[y1_outer:y2_outer, x2_ext:x2_outer]
-            if right.size > 0:
-                edge_blocks.append(right.reshape(-1, 3))
-
-        if not edge_blocks:
-            return None
-        border_pixels = np.concatenate(edge_blocks, axis=0)
-        return np.mean(border_pixels, axis=0)
-
-    # Step 1: 提取边缘颜色，绑定原始 box
-    box_data = []  # [(original_box, label, mean_color)]
+    box_data = []
     for box, label in zip(boxes, labels):
         rect = to_rect_from_points(box)
-        mean_color = get_edge_mean_color(image, rect, initial_expand, border_thickness)
-        box_data.append((box, label, mean_color))
+        x1, y1, x2, y2, *_ = rect
+        h, w = image.shape[:2]
+        x1_ext = max(x1 - initial_expand, 0)
+        y1_ext = max(y1 - initial_expand, 0)
+        x2_ext = min(x2 + initial_expand, w - 1)
+        y2_ext = min(y2 + initial_expand, h - 1)
+        x1_outer = max(x1_ext - border_thickness, 0)
+        y1_outer = max(y1_ext - border_thickness, 0)
+        x2_outer = min(x2_ext + border_thickness, w - 1)
+        y2_outer = min(y2_ext + border_thickness, h - 1)
 
-    # Step 2: 每个 cluster 的 dominant color
+        edge_blocks = []
+        label_list = []
+        img_list = []
+
+        if y1_ext > y1_outer:
+            top = image[y1_outer:y1_ext, x1_outer:x2_outer]
+            if top.size > 0:
+                edge_blocks.append(top.reshape(-1, 3))
+                label_list.append("TOP")
+                img_list.append(top)
+        if y2_outer > y2_ext:
+            bottom = image[y2_ext:y2_outer, x1_outer:x2_outer]
+            if bottom.size > 0:
+                edge_blocks.append(bottom.reshape(-1, 3))
+                label_list.append("BOTTOM")
+                img_list.append(bottom)
+        if x1_ext > x1_outer:
+            left = image[y1_outer:y2_outer, x1_outer:x1_ext]
+            if left.size > 0:
+                edge_blocks.append(left.reshape(-1, 3))
+                label_list.append("LEFT")
+                img_list.append(left)
+        if x2_outer > x2_ext:
+            right = image[y1_outer:y2_outer, x2_ext:x2_outer]
+            if right.size > 0:
+                edge_blocks.append(right.reshape(-1, 3))
+                label_list.append("RIGHT")
+                img_list.append(right)
+
+        if not edge_blocks:
+            box_data.append((box, label, None))
+            continue
+
+        border_pixels = np.concatenate(edge_blocks, axis=0)
+        mean_color = np.mean(border_pixels, axis=0)
+
+        rect_img = image[y1:y2, x1:x2]
+        img_list.append(rect_img)
+        label_list.append("ITEM")
+
+        box_data.append((box, label, mean_color, label_list.copy(), img_list.copy(), np.mean(border_pixels, axis=0)))
+
     cluster_colors = defaultdict(list)
-    for box, label, color in box_data:
-        if color is not None and label != -1:
-            cluster_colors[label].append(round_color(color, bucket_size))
+    cluster_centers = defaultdict(list)
+    for box, label, *rest in box_data:
+        color = rest[0] if rest else None
+        if label != -1:
+            if color is not None:
+                cluster_colors[label].append(round_color(color, bucket_size))
+            center = np.mean(np.array(box), axis=0)
+            cluster_centers[label].append(center)
 
     cluster_dominant = {
         label: Counter(colors).most_common(1)[0][0]
         for label, colors in cluster_colors.items()
     }
 
-    # Step 3: 判断颜色一致性
     kept_boxes, kept_labels, removed_boxes = [], [], []
-    for box, label, color in box_data:
+    per_cluster_counts = defaultdict(lambda: {"in": 0, "kept": 0})
+
+    for i, (box, label, color, label_list, img_list, mean_color) in enumerate(box_data):
+        center = np.mean(box, axis=0)
+
         if label == -1 or color is None:
             removed_boxes.append(box)
+            reason = "label=-1 (unclustered)" if label == -1 else "mean_color=None (edge color extraction failed)"
+            print(f" - Removed box at ({center[0]:.1f}, {center[1]:.1f}): {reason}")
             continue
+
+        per_cluster_counts[label]["in"] += 1
         dom_color = np.array(cluster_dominant[label])
         dist = np.linalg.norm(color - dom_color)
+
         if dist <= color_tolerance:
             kept_boxes.append(box)
             kept_labels.append(label)
+            per_cluster_counts[label]["kept"] += 1
         else:
             removed_boxes.append(box)
+            print(f" - Removed box at ({center[0]:.1f}, {center[1]:.1f}), cluster {label}:")
+            print(f"    > Dominant color for cluster {label}: {tuple(dom_color.astype(int))}")
+            print(f"    > Box edge mean color: {tuple(color.astype(int))}")
+            print(f"    > Color distance = {dist:.1f}, exceeds tolerance = {color_tolerance}")
 
-    print(f"\n[Cluster Color Filter] Input: {len(boxes)}, Output: {len(kept_boxes)}")
+            if debug_dir:
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                font_scale = 0.4
+                font_thickness = 1
+                label_height = 20
+                min_visual_width = 40
+
+                labeled_blocks = []
+                max_height = 0
+
+                for label_txt, img in zip(label_list, img_list):
+                    safe_img = img if img.size != 0 else np.full((30, 30, 3), 255, dtype=np.uint8)
+                    bordered_img = cv2.copyMakeBorder(
+                        safe_img, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=(180, 180, 180)
+                    )
+                    h, w = bordered_img.shape[:2]
+
+                    if w < min_visual_width:
+                        pad_total = min_visual_width - w
+                        pad_left = pad_total // 2
+                        pad_right = pad_total - pad_left
+                        bordered_img = cv2.copyMakeBorder(
+                            bordered_img, 0, 0, pad_left, pad_right,
+                            cv2.BORDER_CONSTANT, value=(255, 255, 255)
+                        )
+                        w = min_visual_width
+
+                    label_img = np.full((label_height, w, 3), 255, dtype=np.uint8)
+                    text_size = cv2.getTextSize(label_txt, font, font_scale, font_thickness)[0]
+                    text_x = (w - text_size[0]) // 2
+                    text_y = (label_height + text_size[1]) // 2
+                    cv2.putText(label_img, label_txt, (text_x, text_y), font, font_scale,
+                                (0, 0, 255), font_thickness, cv2.LINE_AA)
+
+                    combined = np.vstack([label_img, bordered_img])
+                    labeled_blocks.append(combined)
+                    max_height = max(max_height, combined.shape[0])
+
+                resized_blocks = []
+                for block in labeled_blocks:
+                    h, w = block.shape[:2]
+                    if h != max_height:
+                        resized_block = cv2.resize(block, (int(w * max_height / h), max_height))
+                    else:
+                        resized_block = block
+                    resized_blocks.append(resized_block)
+
+                debug_image = np.hstack(resized_blocks)
+                annotated = debug_image.copy()
+
+                ref_r, ref_g, ref_b = [int(x) for x in dom_color]
+                text_lines = [
+                    f"Reference RGB: ({ref_r}, {ref_g}, {ref_b})",
+                    f"Mean Diff: {dist:.2f}",
+                    f"Tolerance: {color_tolerance}",
+                    f"Pass: No"
+                ]
+                for j, line in enumerate(text_lines):
+                    y = 15 + j * 18
+                    cv2.putText(annotated, line, (10, y), font, font_scale,
+                                (0, 0, 255), font_thickness, cv2.LINE_AA)
+
+                debug_path = os.path.join(debug_dir, f"{file_name}_box_{i}_debug_cluster_color.png")
+                cv2.imwrite(debug_path, annotated)
+
+    valid_input_count = sum(1 for b, l in zip(boxes, labels) if l != -1)
+    print(f"Input: {valid_input_count}, Output: {len(kept_boxes)}")
+    for label in sorted(cluster_dominant.keys()):
+        center_pts = np.array(cluster_centers[label])
+        center_mean = np.mean(center_pts, axis=0)
+        dom_color = cluster_dominant[label]
+        count_in = per_cluster_counts[label]["in"]
+        count_kept = per_cluster_counts[label]["kept"]
+        print(f" - Cluster {label}: center = ({center_mean[0]:.1f}, {center_mean[1]:.1f}), "
+              f"dominant RGB = {dom_color}, kept = {count_kept}/{count_in}")
+
     return kept_boxes, kept_labels, removed_boxes
-
-
-def is_rectangle_aligned(approx, angle_tolerance=15, alignment_tolerance=10):
-    """
-    判断轮廓是否是矩形，且矩形边与图像边缘（x/y轴）对齐。
-
-    参数：
-    - approx: cv2.approxPolyDP 输出的 4 点轮廓
-    - angle_tolerance: 判断矩形角度偏差容忍度（默认 ±15°）
-    - alignment_tolerance: 边方向与水平/垂直的容忍度（默认 ±10°）
-
-    返回：
-    - True 表示是对齐矩形，False 表示不是
-    """
-    def angle_between(v1, v2):
-        cos_theta = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
-        cos_theta = np.clip(cos_theta, -1.0, 1.0)
-        return np.degrees(np.arccos(cos_theta))
-
-    def classify_alignment(vec):
-        angle = np.degrees(np.arctan2(vec[1], vec[0]))  # 与 x 轴夹角 [-180, 180]
-        angle = abs(angle)  # 考虑角度对称性
-        if angle <= alignment_tolerance or abs(angle - 180) <= alignment_tolerance:
-            return 'horizontal'
-        elif abs(angle - 90) <= alignment_tolerance:
-            return 'vertical'
-        else:
-            return 'diagonal'
-
-    pts = approx.reshape(4, 2)
-    vectors = [pts[(i + 1) % 4] - pts[i] for i in range(4)]
-
-    # 是否是矩形（角度近似90°）
-    angles = [angle_between(vectors[i], vectors[(i + 1) % 4]) for i in range(4)]
-    is_rectangular = all(abs(a - 90) <= angle_tolerance for a in angles)
-
-    # 判断边方向（是否水平/垂直）
-    alignments = [classify_alignment(v) for v in vectors]
-    is_axis_aligned = alignments.count('horizontal') == 2 and alignments.count('vertical') == 2
-
-    return is_rectangular and is_axis_aligned
-
-
-def obtain_legend_rectangle_bbox(main_img, legend_area,
-                                 area_min_factor=0.01, area_max_factor=0.5,
-                                 binary_image_filename=None,
-                                 contour_image_filename=None):
-    print(f"\n[Search] Searching candidate item boxes")
-    target_img = np.array(main_img)
-    target_img = cv2.cvtColor(target_img, cv2.COLOR_BGR2GRAY)
-
-    # 自适应二值化
-    blur = cv2.GaussianBlur(target_img, (5, 5), 0)
-    thresh = cv2.adaptiveThreshold(
-        blur, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY_INV, 5, 1
-    )
-
-    if binary_image_filename is not None:
-        cv2.imwrite(binary_image_filename, thresh)
-        print(f"Binary image saved to: {binary_image_filename}")
-
-    contours, _ = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-
-    rectangles = []
-    for contour in contours:
-        epsilon = 0.02 * cv2.arcLength(contour, True)
-        approx = cv2.approxPolyDP(contour, epsilon, True)
-
-        if len(approx) == 4 and is_rectangle_aligned(approx):
-            x, y, w, h = cv2.boundingRect(approx)
-            aspect_ratio = w / h
-            item_area = w * h
-            if (1 < aspect_ratio < 3.5) and (legend_area * area_min_factor <= item_area <= legend_area * area_max_factor):
-            #if (legend_area * area_min_factor <= item_area <= legend_area * area_max_factor):
-                rectangles.append([x, y, x + w, y + h, 1.0])
-
-    print("Found {} candidates".format(len(rectangles)))
-
-    # 可视化未通过筛选的原始轮廓
-    if contour_image_filename is not None:
-        debug_img = main_img.copy()
-
-        for contour in contours:
-            epsilon = 0.02 * cv2.arcLength(contour, True)
-            approx = cv2.approxPolyDP(contour, epsilon, True)
-
-            if len(approx) == 4 and is_rectangle_aligned(approx):
-                x, y, w, h = cv2.boundingRect(approx)
-                aspect_ratio = w / h
-                item_area = w * h
-                #if (1.1 < aspect_ratio < 3.5) and (legend_area * area_min_factor <= item_area <= legend_area * area_max_factor):
-                #    continue  # 通过筛选的跳过
-
-                # 不通过的原始轮廓画红色线
-                cv2.drawContours(debug_img, [contour], -1, (0, 0, 255), 1)
-
-        cv2.imwrite(contour_image_filename, debug_img)
-        print(f"Debug image with raw contours saved to: {contour_image_filename}")
-
-    return rectangles
 
 
 def recover_deleted_boxes_by_size_consistency(all_boxes, labels, outlier_boxes, size_tolerance=0.1):
@@ -715,6 +794,7 @@ def filter_isolated_boxes_by_clustering_auto_eps(boxes, min_samples=3, eps_scale
     # 提取聚类框和离群框
     clustered_boxes = [box for box, label in zip(boxes, labels) if label != -1]
     outlier_boxes = [box for box, label in zip(boxes, labels) if label == -1]
+    clustered_labels = [label for box, label in zip(boxes, labels) if label != -1]
 
     # 计算每个聚类的标准宽高
     cluster_sizes = defaultdict(list)
@@ -735,7 +815,7 @@ def filter_isolated_boxes_by_clustering_auto_eps(boxes, min_samples=3, eps_scale
         cluster_standards[label] = (std_w, std_h)
         print(f" - Cluster {label}: width = {std_w:.1f}, height = {std_h:.1f} ({len(sizes)} boxes)")
 
-    return clustered_boxes, labels.tolist(), outlier_boxes, cluster_standards
+    return clustered_boxes, clustered_labels, outlier_boxes, cluster_standards
 
 
 def recover_boxes_by_size_match(outlier_boxes, cluster_standards, size_tolerance=0.1):
@@ -985,6 +1065,41 @@ def find_item_boxes_with_nearby_text(item_boxes, text_boxes,
     print(f"\n[Match] Found {len(matched_pairs)} item-text box pairs.")
     return matched_pairs
 
+import random
+def draw_clusters_with_labels(image, boxes, labels, save_path, thickness=2):
+    """
+    使用预定义颜色绘制 cluster box。
+
+    参数：
+    - image: 原图
+    - boxes: 每个 box 为 [(x1,y1), ...] 四点格式
+    - labels: 与 boxes 对应的聚类编号
+    - save_path: 图像保存路径
+    """
+    vis = image.copy()
+    unique_labels = sorted(set(labels))
+
+    # 颜色池（可自行扩展）
+    PREDEFINED_COLORS = [
+        (255, 0, 0), (0, 128, 0), (0, 0, 255), (255, 165, 0),
+        (128, 0, 128), (0, 255, 255), (255, 192, 203), (0, 0, 0),
+        (139, 69, 19), (255, 255, 0), (0, 255, 0), (70, 130, 180),
+        (255, 20, 147)
+    ]
+
+    label_colors = {}
+    for i, label in enumerate(unique_labels):
+        color = PREDEFINED_COLORS[i % len(PREDEFINED_COLORS)]
+        label_colors[label] = color
+
+    for box, label in zip(boxes, labels):
+        color = label_colors[label]
+        pts = np.array(box, dtype=np.int32).reshape((-1, 1, 2))
+        cv2.polylines(vis, [pts], isClosed=True, color=color, thickness=thickness)
+
+    cv2.imwrite(save_path, vis)
+    print(f"[Debug] Cluster visualization saved to: {save_path}")
+
 
 def process_image(image_path, output_image_path, output_txt_path, model_path,
                   legend_area_min_factor=0.001, legend_area_max_factor=0.1,
@@ -1142,16 +1257,33 @@ def process_image(image_path, output_image_path, output_txt_path, model_path,
 
     filtered_out_boxes = remove_overlapping_boxes_simple(filtered_out_boxes, type="filtered out")
 
+    all_boxes = remove_boxes_with_small_edge_distance(all_boxes, min_distance=5)
+
     # --- 融合overlay到vis_img，产生半透明填充效果 ---
     clustered_boxes, labels, outlier_boxes, cluster_standards = filter_isolated_boxes_by_clustering_auto_eps(all_boxes, eps_scale=cluster_eps_scale, min_samples=cluster_min_samples)
+
+    if debug:
+        draw_clusters_with_labels(image=main_img,
+                                boxes=clustered_boxes,
+                                labels=labels,
+                                save_path=os.path.join(output_dir,f"{image_base_name}_cluster_before_color_filter.png"))
 
     kept_boxes, kept_labels, removed_by_color = filter_by_dominant_edge_color(image=main_img,
                                                                                 boxes=clustered_boxes,
                                                                                 labels=labels,
                                                                                 color_tolerance=color_tolerance,
-                                                                                bucket_size=5,
+                                                                                bucket_size=10,
                                                                                 initial_expand=color_test_initial_expand,
-                                                                                border_thickness=color_test_border_thickness)
+                                                                                border_thickness=color_test_border_thickness,
+                                                                                debug_dir=output_dir if debug else None,
+                                                                                file_name=image_base_name)
+
+    draw_clusters_with_labels(
+        image=main_img,
+        boxes=kept_boxes,
+        labels=kept_labels,
+        save_path=os.path.join(output_dir,f"{image_base_name}_cluster.png"))
+
 
     recovered_boxes = recover_boxes_by_size_match(outlier_boxes+filtered_out_boxes+removed_by_color, cluster_standards, size_tolerance=cluster_recover_size_tolerance)
     #recovered_boxes = recover_boxes_by_size_match(outlier_boxes, cluster_standards, size_tolerance=cluster_recover_size_tolerance)
@@ -1228,7 +1360,7 @@ def main():
                         help="Maximum ratio of item box area to legend area when a legend is detected (default: 0.1)")
     parser.add_argument('--global_area_min_factor', type=float, default=0.0001,
                         help="Minimum ratio of item box area to full image area when no legend is detected (default: 0.0001)")
-    parser.add_argument('--global_area_max_factor', type=float, default=0.05,
+    parser.add_argument('--global_area_max_factor', type=float, default=0.04,
                         help="Maximum ratio of item box area to full image area when no legend is detected (default: 0.01)")
     parser.add_argument('--expand_pixel', type=int, default=40,
                         help="Number of pixels to expand around the detected legend region for further processing (default: 30px)")
@@ -1242,7 +1374,7 @@ def main():
                         help="Initial number of pixels to expand each box before checking border color uniformity (default: 1)")
     parser.add_argument('--color_test_border_thickness', type=int, default=1,
                         help="Thickness of the border (in pixels) to test for color consistency around the expanded box (default: 1)")
-    parser.add_argument('--color_tolerance', type=float, default=50,
+    parser.add_argument('--color_tolerance', type=float, default=40,
                         help="Tolerance for average border color difference (default: 25). ")
     parser.add_argument('--skip_legend', action='store_true',
                         help="If set, skip searching within legend box and directly detect items in the whole image.")
