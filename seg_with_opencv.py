@@ -1107,11 +1107,18 @@ def filter_duplicate_pure_color_boxes(
     duplicate_filter_size_tolerance=2,
     duplicate_filter_color_tolerance=10,
     shrink_pixels=2,
+    color_std_max_threshold=20,
     debug_output_dir=None,
     file_name="image"
 ):
     """
-    过滤重复的纯色 box（尺寸一致 + 颜色一致 + 标准差低），并为所有 box 生成调试图像（白底 + 灰框 + 竖排文字）。
+    过滤重复纯色 box（尺寸一致 + 颜色一致 + 标准差低），并保存每个 box 的调试图像。
+
+    图像特征：
+    - 白色背景
+    - 居中 box（缩放到统一高度）
+    - 灰色边框标示 box 范围
+    - 左上角竖排显示 Mean, Std, Size 信息
 
     参数：
     - boxes: List[List[(x, y)]]
@@ -1120,7 +1127,7 @@ def filter_duplicate_pure_color_boxes(
     - duplicate_filter_color_tolerance: 颜色容差（欧氏距离）
     - shrink_pixels: 从 box 四边向内收缩像素数
     - debug_output_dir: 若不为 None，则保存所有 box 的 debug 图像
-    - file_name: 用于命名 debug 图像文件前缀
+    - file_name: 图像名前缀（通常为原图文件名）
 
     返回：
     - retained_boxes: 保留的 box
@@ -1136,6 +1143,7 @@ def filter_duplicate_pure_color_boxes(
         font = cv2.FONT_HERSHEY_SIMPLEX
         font_scale = 0.3
         thickness = 1
+        target_height = 64  # 统一缩放高度
 
     def get_box_stats(box):
         x1, y1 = box[0]
@@ -1164,7 +1172,7 @@ def filter_duplicate_pure_color_boxes(
                           duplicate_filter_color_tolerance).astype(int))
         std_max = np.max(std_color)
 
-        # === 保存 debug 图像（全部 box） ===
+        # === 保存调试图像（所有 box） ===
         if debug_output_dir and roi.size > 0:
             mean_i = mean_color.astype(int)
             std_i = std_color.astype(int)
@@ -1174,11 +1182,19 @@ def filter_duplicate_pure_color_boxes(
                 f"Size: ({w},{h})"
             ]
 
-            pad = 8  # 白边尺寸
-            bg_h, bg_w = roi.shape[0] + 2 * pad, roi.shape[1] + 2 * pad
-            debug_img = np.ones((bg_h, bg_w, 3), dtype=np.uint8) * 255  # 白底
-            debug_img[pad:pad + roi.shape[0], pad:pad + roi.shape[1]] = roi
-            cv2.rectangle(debug_img, (pad, pad), (pad + roi.shape[1] - 1, pad + roi.shape[0] - 1), (180, 180, 180), 1)
+            # === 缩放 roi 到统一高度 ===
+            scale = target_height / roi.shape[0]
+            new_w = max(1, int(roi.shape[1] * scale))
+            roi_resized = cv2.resize(roi, (new_w, target_height), interpolation=cv2.INTER_AREA)
+
+            # === 创建白色背景并加边框 ===
+            pad = 8
+            bg_h, bg_w = roi_resized.shape[0] + 2 * pad, roi_resized.shape[1] + 2 * pad
+            debug_img = np.ones((bg_h, bg_w, 3), dtype=np.uint8) * 255
+            debug_img[pad:pad + roi_resized.shape[0], pad:pad + roi_resized.shape[1]] = roi_resized
+            cv2.rectangle(debug_img, (pad, pad),
+                          (pad + roi_resized.shape[1] - 1, pad + roi_resized.shape[0] - 1),
+                          (180, 180, 180), 1)
 
             for i, line in enumerate(lines):
                 y = 12 + i * 12
@@ -1187,8 +1203,8 @@ def filter_duplicate_pure_color_boxes(
             debug_path = os.path.join(debug_output_dir, f"{file_name}_dup_box_{idx}_debug.png")
             cv2.imwrite(debug_path, debug_img)
 
-        # 满足纯色条件的才进入 group_map
-        if std_max < 3:
+        # === 满足纯色才分组 ===
+        if std_max < color_std_max_threshold:
             key = (round(w / duplicate_filter_size_tolerance),
                    round(h / duplicate_filter_size_tolerance),
                    mean_rgb)
@@ -1213,7 +1229,6 @@ def filter_duplicate_pure_color_boxes(
         print(f"  Sample removed group key: {sample_key}")
 
     return retained, [boxes[i] for i in removed]
-
 
 
 
@@ -1379,6 +1394,7 @@ def process_image(image_path, output_image_path, output_txt_path, model_path,
                                                                 duplicate_filter_size_tolerance=5,
                                                                 duplicate_filter_color_tolerance=2,
                                                                 shrink_pixels=4,
+                                                                color_std_max_threshold=20,
                                                                 debug_output_dir=output_dir if debug else None,
                                                                 file_name=image_base_name)
 
