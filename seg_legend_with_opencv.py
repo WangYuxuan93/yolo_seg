@@ -2,111 +2,14 @@ import cv2
 import numpy as np
 import os
 import math
+import random
 import glob
 import argparse
-from ultralytics import YOLO
 from collections import defaultdict, Counter
+from itertools import combinations
 
-def predict_image_segmentation(image: np.ndarray, model_path: str, 
-                                return_vis: bool = False,
-                                debug: bool = False,
-                                smooth_contours: bool = False,
-                                epsilon_factor: float = 0.02,
-                                merge_same_class_boxes: bool = False):
-    model = YOLO(model_path)
-    results = model(image)
-    predictions = []
-    vis_img = image.copy()
-
-    colors = {
-        'main map': (0, 255, 0),
-        'legend': (255, 0, 0),
-        'item': (0, 0, 255),
-        'compass': (0, 255, 255),
-        'scale': (255, 255, 255),
-        'title': (255, 255, 0)
-    }
-
-    priority = {
-        'main map': 0,
-        'legend': 1,
-        'item': 2,
-        'compass': 3,
-        'scale': 4,
-        'title': 5
-    }
-
-    h_img, w_img = image.shape[:2]
-    combined_mask = np.zeros_like(vis_img, dtype=np.uint8)
-
-    class_polygons = {}
-
-    for result in results:
-        if result.masks is None or result.boxes is None or len(result.boxes.cls) == 0:
-            continue
-
-        targets = []
-        for i in range(len(result.masks.xy)):
-            class_id = int(result.boxes.cls[i])
-            class_name = result.names[class_id]
-            polygon = result.masks.xy[i]
-            targets.append((priority.get(class_name, 6), i, class_id, class_name, polygon))
-
-        targets.sort(key=lambda x: x[0])
-
-        for _, i, class_id, class_name, polygon in targets:
-            if class_name not in class_polygons:
-                class_polygons[class_name] = []
-            class_polygons[class_name].append((class_id, polygon))
-
-    merged_targets = []
-
-    for class_name, instances in class_polygons.items():
-        if merge_same_class_boxes and len(instances) > 1:
-            class_mask = np.zeros((h_img, w_img), dtype=np.uint8)
-            for _, polygon in instances:
-                pts = polygon.astype(np.int32)
-                cv2.fillPoly(class_mask, [pts], 255)
-
-            contours, _ = cv2.findContours(class_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            for contour in contours:
-                if contour.shape[1] == 1:
-                    contour = contour.squeeze(1)
-                merged_targets.append((instances[0][0], class_name, contour))
-        else:
-            for class_id, polygon in instances:
-                pts = polygon.astype(np.int32)
-                merged_targets.append((class_id, class_name, pts))
-
-    for class_id, class_name, polygon in merged_targets:
-        color = colors.get(class_name, tuple(np.random.randint(0, 255, 3).tolist()))
-
-        if smooth_contours:
-            hull = cv2.convexHull(polygon)
-            arc_length = cv2.arcLength(hull, closed=True)
-            epsilon = epsilon_factor * arc_length
-            approx = cv2.approxPolyDP(hull, epsilon=epsilon, closed=True)
-            points = [(int(pt[0][0]), int(pt[0][1])) for pt in approx]
-            polygon_draw = approx
-        else:
-            points = [(int(x), int(y)) for x, y in polygon]
-            polygon_draw = polygon.reshape(-1, 1, 2)
-
-        predictions.append({
-            'class_id': class_id,
-            'class_name': class_name,
-            'points': points
-        })
-
-        cv2.fillPoly(combined_mask, [polygon_draw], color)
-        cv2.polylines(vis_img, [polygon_draw], isClosed=True, color=color, thickness=2)
-        x_text, y_text, _, _ = cv2.boundingRect(polygon_draw)
-        cv2.putText(vis_img, class_name, (x_text, y_text - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
-
-    if return_vis:
-        vis_img = cv2.addWeighted(vis_img, 0.9, combined_mask, 0.3, 0)
-
-    return (predictions, vis_img) if return_vis else predictions
+from sklearn.cluster import DBSCAN
+from sklearn.neighbors import NearestNeighbors
 
 
 def is_rectangle_aligned(approx, angle_tolerance=15, alignment_tolerance=10):
@@ -214,7 +117,7 @@ def obtain_legend_rectangle_bbox(main_img, legend_area,
     return rectangles
 
 
-from itertools import combinations
+
 
 def remove_boxes_with_small_edge_distance(boxes, min_distance=1):
     """
@@ -479,11 +382,7 @@ def filter_by_dominant_edge_color(image, boxes, labels, color_tolerance=15, buck
     - kept_labels: 对应 label
     - removed_boxes: 被剔除的原始四点 box
     """
-    import cv2
-    import numpy as np
-    import os
-    from collections import defaultdict, Counter
-
+   
     print(f"\n[Cluster Color Filter]")
 
     def round_color(color, bucket=5):
@@ -728,9 +627,6 @@ def recover_deleted_boxes_by_size_consistency(all_boxes, labels, outlier_boxes, 
 
     return recovered_boxes
 
-
-from sklearn.cluster import DBSCAN
-from sklearn.neighbors import NearestNeighbors
 
 def filter_isolated_boxes_by_clustering_auto_eps(boxes, min_samples=3, eps_scale=2.0):
     """
@@ -1065,7 +961,7 @@ def find_item_boxes_with_nearby_text(item_boxes, text_boxes,
     print(f"\n[Match] Found {len(matched_pairs)} item-text box pairs.")
     return matched_pairs
 
-import random
+
 def draw_clusters_with_labels(image, boxes, labels, save_path, thickness=2):
     """
     使用预定义颜色绘制 cluster box。
@@ -1133,10 +1029,6 @@ def filter_duplicate_pure_color_boxes(
     - retained_boxes: 保留的 box
     - removed_boxes: 被剔除的 box
     """
-    from collections import defaultdict
-    import numpy as np
-    import cv2
-    import os
 
     if debug_output_dir:
         os.makedirs(debug_output_dir, exist_ok=True)
@@ -1270,10 +1162,6 @@ def process_image(image_path, output_image_path, output_txt_path, model_path,
     vis_img = main_img.copy()
     overlay = vis_img.copy()  # 用来画半透明区域
 
-    if not skip_legend:
-        predictions = predict_image_segmentation(main_img, model_path=model_path, smooth_contours=False,
-                                                  epsilon_factor=0.002,
-                                                  merge_same_class_boxes=False)
     all_boxes = []
     found_legend = False
     legend_counter = 0  # 用于编号
@@ -1282,113 +1170,35 @@ def process_image(image_path, output_image_path, output_txt_path, model_path,
 
     all_matched_pairs = []
 
-    if not skip_legend:
-        for pred in predictions:
-            if pred['class_name'] == 'legend':
-                found_legend = True
+    legend_crop = main_img
+    legend_area = w_img * h_img
 
-                pts = np.array(pred['points'], dtype=np.int32)
+    rectangles = obtain_legend_rectangle_bbox(legend_crop, legend_area,
+                                                area_min_factor=global_area_min_factor,
+                                                area_max_factor=global_area_max_factor,
+                                                binary_image_filename=os.path.join(output_dir, f"{image_base_name}_legend_binary.png"),
+                                                contour_image_filename=os.path.join(output_dir, f"{image_base_name}_contour.png"))
 
-                # --- 画原始legend polygon（蓝色） ---
-                cv2.polylines(vis_img, [pts], isClosed=True, color=(255, 0, 0), thickness=2)
+    selected = remove_overlapping_rect_simple(rectangles)
 
-                # --- 创建mask并膨胀 ---
-                mask = np.zeros(main_img.shape[:2], dtype=np.uint8)
-                cv2.fillPoly(mask, [pts], 255)
+    #matched_pairs = find_item_boxes_with_nearby_text(selected, predicted_text_boxes, offset_xy=(0, 0))
+    #all_matched_pairs.extend(matched_pairs)
 
-                kernel = np.ones((expand_pixel * 2 + 1, expand_pixel * 2 + 1), np.uint8)
-                dilated_mask = cv2.dilate(mask, kernel, iterations=1)
-
-                contours, _ = cv2.findContours(dilated_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                if len(contours) == 0:
-                    raise ValueError("No contours found in expanded mask")
-
-                expanded_pts = max(contours, key=cv2.contourArea)
-                
-                legend_area = cv2.contourArea(expanded_pts)
-                #print (f"expanded_pts: {expanded_pts}\nlegend_area: {legend_area}")
-
-                # --- 画扩展后的legend多边形（紫色） ---
-                cv2.polylines(vis_img, [expanded_pts], isClosed=True, color=(255, 0, 255), thickness=3)
-
-                expanded_mask = np.zeros_like(dilated_mask)
-                cv2.fillPoly(expanded_mask, [expanded_pts], 255)
-
-                legend_crop = cv2.bitwise_and(main_img, main_img, mask=expanded_mask)
-
-                x, y, w, h = cv2.boundingRect(expanded_pts)
-                legend_crop = legend_crop[y:y+h, x:x+w]
-
-                legend_counter += 1  # 增加图例编号
-
-                # 构建文件名并传递到函数中
-                binary_image_filename = os.path.join(output_dir, f"{image_base_name}_{legend_counter}_binary.png")
-                contour_image_filename = os.path.join(output_dir, f"{image_base_name}_{legend_counter}_contour.png")
-                
-                # 保存二值化图像
-                rectangles = obtain_legend_rectangle_bbox(legend_crop, legend_area,
-                                                            area_min_factor=legend_area_min_factor,
-                                                            area_max_factor=legend_area_max_factor,
-                                                            binary_image_filename=binary_image_filename,
-                                                            contour_image_filename=contour_image_filename)
-
-                selected = remove_overlapping_rect_simple(rectangles)
-
-                #matched_pairs = find_item_boxes_with_nearby_text(selected, predicted_text_boxes, offset_xy=(x, y))
-                #all_matched_pairs.extend(matched_pairs)
-
-                kept_boxes, filtered_boxes = filter_boxes_by_uniform_color(selected,
-                                                                            image=main_img,
-                                                                            offset_xy=(x, y),  # legend 裁剪偏移
-                                                                            initial_expand=color_test_initial_expand,
-                                                                            border_thickness=color_test_border_thickness,
-                                                                            default_bg_color=default_bg_color,
-                                                                            color_tolerance=color_tolerance,
-                                                                            debug=debug,
-                                                                            debug_dir=output_dir,
-                                                                            file_name=image_base_name,
-                                                                            legend_counter=legend_counter,
-                                                                            start_index=rec_id)
-                all_boxes.extend(kept_boxes)
-                filtered_out_boxes.extend(filtered_boxes)
-                rec_id += len(selected)
-
-    if not found_legend or not all_boxes:
-        if not found_legend:
-            print(f"no legend found, searching the whole image: {image_path}")
-        else:
-            print(f"legend found, but no valid item box found in legend area, searching the whole image: {image_path}")
-
-        legend_crop = main_img
-        legend_area = w_img * h_img
-
-        rectangles = obtain_legend_rectangle_bbox(legend_crop, legend_area,
-                                                    area_min_factor=global_area_min_factor,
-                                                    area_max_factor=global_area_max_factor,
-                                                    binary_image_filename=os.path.join(output_dir, f"{image_base_name}_legend_binary.png"),
-                                                    contour_image_filename=os.path.join(output_dir, f"{image_base_name}_contour.png")
-                                                    )
-
-        selected = remove_overlapping_rect_simple(rectangles)
-
-        #matched_pairs = find_item_boxes_with_nearby_text(selected, predicted_text_boxes, offset_xy=(0, 0))
-        #all_matched_pairs.extend(matched_pairs)
-
-        kept_boxes, filtered_boxes = filter_boxes_by_uniform_color(selected,
-                                                                    image=main_img,
-                                                                    offset_xy=(0, 0),  # legend 裁剪偏移
-                                                                    initial_expand=color_test_initial_expand,
-                                                                    border_thickness=color_test_border_thickness,
-                                                                    default_bg_color=default_bg_color,
-                                                                    color_tolerance=color_tolerance,
-                                                                    debug=debug,
-                                                                    debug_dir=output_dir,
-                                                                    file_name=image_base_name,
-                                                                    legend_counter=legend_counter,
-                                                                    start_index=rec_id)
-        all_boxes.extend(kept_boxes)
-        filtered_out_boxes.extend(filtered_boxes)
-        rec_id += len(selected)
+    kept_boxes, filtered_boxes = filter_boxes_by_uniform_color(selected,
+                                                                image=main_img,
+                                                                offset_xy=(0, 0),  # legend 裁剪偏移
+                                                                initial_expand=color_test_initial_expand,
+                                                                border_thickness=color_test_border_thickness,
+                                                                default_bg_color=default_bg_color,
+                                                                color_tolerance=color_tolerance,
+                                                                debug=debug,
+                                                                debug_dir=output_dir,
+                                                                file_name=image_base_name,
+                                                                legend_counter=legend_counter,
+                                                                start_index=rec_id)
+    all_boxes.extend(kept_boxes)
+    filtered_out_boxes.extend(filtered_boxes)
+    rec_id += len(selected)
 
     all_boxes = remove_overlapping_boxes_simple(all_boxes, type="all")
 
@@ -1459,26 +1269,6 @@ def process_image(image_path, output_image_path, output_txt_path, model_path,
     #    x1, y1 = box[0]
     #    x3, y3 = box[2]
     #    cv2.rectangle(vis_img, (x1, y1), (x3, y3), (0, 0, 255), 2)
-
-
-    """
-    for ibox, tbox in all_matched_pairs:
-        x1, y1, x2, y2, _ = ibox
-        cv2.rectangle(vis_img, (x1, y1), (x2, y2), (255, 0, 0), 2)
-        cv2.polylines(vis_img, [np.array(tbox, dtype=np.int32)], isClosed=True, color=(0, 0, 255), thickness=2)
-
-        # 计算中心点
-        item_cx = (x1 + x2) // 2
-        item_cy = (y1 + y2) // 2
-
-        text_xs = [pt[0] for pt in tbox]
-        text_ys = [pt[1] for pt in tbox]
-        text_cx = sum(text_xs) // 4
-        text_cy = sum(text_ys) // 4
-
-        # 画连线：绿色线连接 item box 和 text box 中心
-        cv2.line(vis_img, (item_cx, item_cy), (text_cx, text_cy), (0, 255, 0), 2)
-    """
 
     alpha = 0.2  # 半透明程度
     vis_img = cv2.addWeighted(overlay, alpha, vis_img, 1 - alpha, 0)
