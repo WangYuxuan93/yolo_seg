@@ -804,6 +804,7 @@ def refine_boxes_by_size_consistency(boxes, cluster_standards, size_tolerance=0.
     - refined_boxes: List[List[Tuple[int, int]]]，尺寸合法的 box
     """
     refined_boxes = []
+    failed_boxes = []
     print("\n[Refine] Re-checking kept boxes for size consistency:")
 
     for box in boxes:
@@ -823,10 +824,11 @@ def refine_boxes_by_size_consistency(boxes, cluster_standards, size_tolerance=0.
         if passed:
             refined_boxes.append(box)
         else:
+            failed_boxes.append(box)
             print(f"Box filtered out: width = {w:.1f}, height = {h:.1f} (no match)")
 
     print(f"Retained {len(refined_boxes)} of {len(boxes)} boxes after size check.")
-    return refined_boxes
+    return refined_boxes, failed_boxes
 
 
 def load_predicted_text_boxes(pred_txt_path, angle_tolerance=15):
@@ -1127,7 +1129,7 @@ def filter_duplicate_pure_color_boxes(
     return retained, [boxes[i] for i in removed]
 
 
-
+"""
 def process_image(image_path, output_image_path, output_txt_path, model_path,
                   legend_area_min_factor=0.001, legend_area_max_factor=0.1,
                   global_area_min_factor=0.0001, global_area_max_factor=0.01,
@@ -1139,13 +1141,6 @@ def process_image(image_path, output_image_path, output_txt_path, model_path,
                   duplicate_filter_color_std_max_threshold=20,
                   skip_legend=False, debug=True):
     print(f"\n##################\nProcessing image：{image_path}")
-
-    # 获取 bbox/pred_image.txt 路径（从 image_path 推导）
-    #subdir_path = os.path.dirname(os.path.dirname(image_path))  # 到达 part_x_y/
-    #pred_txt_path = os.path.join(subdir_path, 'bbox', 'pred_image.txt')
-    # 读取 predicted text boxes（四点格式）
-    #predicted_text_boxes = load_predicted_text_boxes(pred_txt_path)
-    #print (f"text boxes: {predicted_text_boxes}")
 
     # 获取 output_dir
     output_dir = os.path.dirname(output_image_path)
@@ -1176,8 +1171,8 @@ def process_image(image_path, output_image_path, output_txt_path, model_path,
     rectangles = obtain_legend_rectangle_bbox(legend_crop, legend_area,
                                                 area_min_factor=global_area_min_factor,
                                                 area_max_factor=global_area_max_factor,
-                                                binary_image_filename=os.path.join(output_dir, f"{image_base_name}_legend_binary.png"),
-                                                contour_image_filename=os.path.join(output_dir, f"{image_base_name}_contour.png"))
+                                                binary_image_filename=os.path.join(output_dir, f"{image_base_name}_legend_binary.png") if debug else None,
+                                                contour_image_filename=os.path.join(output_dir, f"{image_base_name}_contour.png")) if debug else None
 
     selected = remove_overlapping_rect_simple(rectangles)
 
@@ -1233,11 +1228,12 @@ def process_image(image_path, output_image_path, output_txt_path, model_path,
                                                                                 debug_dir=output_dir if debug else None,
                                                                                 file_name=image_base_name)
 
-    draw_clusters_with_labels(
-        image=main_img,
-        boxes=kept_boxes,
-        labels=kept_labels,
-        save_path=os.path.join(output_dir,f"{image_base_name}_cluster.png"))
+    if debug:
+        draw_clusters_with_labels(
+            image=main_img,
+            boxes=kept_boxes,
+            labels=kept_labels,
+            save_path=os.path.join(output_dir,f"{image_base_name}_cluster.png"))
 
 
     recovered_boxes = recover_boxes_by_size_match(outlier_boxes+filtered_out_boxes+removed_by_color, cluster_standards, size_tolerance=cluster_recover_size_tolerance)
@@ -1281,24 +1277,233 @@ def process_image(image_path, output_image_path, output_txt_path, model_path,
             f.write(line + "\n")
 
     print(f"Saved {output_image_path} to {output_txt_path}")
+"""
 
+
+def process_image_from_array(image, image_name,
+                             global_area_min_factor=0.0001, global_area_max_factor=0.01,
+                             cluster_eps_scale=2.0, cluster_min_samples=3,
+                             cluster_recover_size_tolerance=0.1, default_bg_color=None,
+                             color_test_initial_expand=1, color_test_border_thickness=1,
+                             color_tolerance=25, duplicate_filter_size_tolerance=5,
+                             duplicate_filter_color_tolerance=2, duplicate_filter_shrink_pixels=4,
+                             duplicate_filter_color_std_max_threshold=20,
+                             debug=True, debug_dir="."):
+    """
+    从图像对象中提取图例项 box，返回通过筛选的 box 列表（四点坐标形式）
+    """
+    image_base_name, _ = os.path.splitext(image_name)
+    h_img, w_img = image.shape[:2]
+    all_boxes, filtered_out_boxes, rec_id = [], [], 0
+    legend_area = w_img * h_img
+
+    rectangles = obtain_legend_rectangle_bbox(
+        image, legend_area,
+        area_min_factor=global_area_min_factor,
+        area_max_factor=global_area_max_factor,
+        binary_image_filename=os.path.join(debug_dir, f"{image_base_name}_legend_binary.png") if debug else None,
+        contour_image_filename=os.path.join(debug_dir, f"{image_base_name}_contour.png") if debug else None)
+
+    selected = remove_overlapping_rect_simple(rectangles)
+
+    kept_boxes, filtered_boxes = filter_boxes_by_uniform_color(
+        selected, image=image, offset_xy=(0, 0),
+        initial_expand=color_test_initial_expand,
+        border_thickness=color_test_border_thickness,
+        default_bg_color=default_bg_color,
+        color_tolerance=color_tolerance,
+        debug=debug,
+        debug_dir=debug_dir,
+        file_name=image_base_name,
+        legend_counter=0,
+        start_index=rec_id)
+
+    all_boxes.extend(kept_boxes)
+    filtered_out_boxes.extend(filtered_boxes)
+
+    all_boxes = remove_overlapping_boxes_simple(all_boxes, type="all")
+    filtered_out_boxes = remove_overlapping_boxes_simple(filtered_out_boxes, type="filtered out")
+
+    all_boxes, _ = filter_duplicate_pure_color_boxes(
+        all_boxes, image,
+        duplicate_filter_size_tolerance=duplicate_filter_size_tolerance,
+        duplicate_filter_color_tolerance=duplicate_filter_color_tolerance,
+        shrink_pixels=duplicate_filter_shrink_pixels,
+        color_std_max_threshold=duplicate_filter_color_std_max_threshold,
+        debug_output_dir=debug_dir if debug else None,
+        file_name=image_base_name)
+
+    clustered_boxes, labels, outlier_boxes, cluster_standards = filter_isolated_boxes_by_clustering_auto_eps(
+        all_boxes, eps_scale=cluster_eps_scale, min_samples=cluster_min_samples)
+
+    if debug:
+        draw_clusters_with_labels(image, clustered_boxes, labels,
+                                  save_path=os.path.join(debug_dir, f"{image_base_name}_cluster_before_color_filter.png"))
+
+    kept_boxes, kept_labels, removed_by_color = filter_by_dominant_edge_color(
+        image=image, boxes=clustered_boxes, labels=labels,
+        color_tolerance=color_tolerance, bucket_size=10,
+        initial_expand=color_test_initial_expand,
+        border_thickness=color_test_border_thickness,
+        debug_dir=debug_dir if debug else None,
+        file_name=image_base_name)
+
+    if debug:
+        draw_clusters_with_labels(image, kept_boxes, kept_labels,
+                                  save_path=os.path.join(debug_dir, f"{image_base_name}_cluster.png"))
+
+    recovered_boxes = recover_boxes_by_size_match(
+        outlier_boxes + filtered_out_boxes + removed_by_color,
+        cluster_standards,
+        size_tolerance=cluster_recover_size_tolerance)
+
+    filtered_boxes, failed_boxes = refine_boxes_by_size_consistency(
+        kept_boxes, cluster_standards, size_tolerance=cluster_recover_size_tolerance)
+
+    final_boxes = filtered_boxes + recovered_boxes
+    if not final_boxes:
+        print("\n[Fallback] No box remained, fall back to filtered out")
+        final_boxes = filtered_out_boxes
+
+    return final_boxes, filtered_out_boxes + failed_boxes
+
+
+def extract_legend_box_from_image(image, image_name=None):
+    """
+    输入一张图像，手动指定所有参数，调用 process_image_from_array。
+    
+    返回：
+    - final_boxes: 通过所有筛选的 box
+    - filtered_out_boxes: 被中途筛掉的 box
+    """
+
+    # 手动设置参数（你可以在这里灵活调整）
+    image_name = image_name if image_name is not None else "manual_input.png"
+    global_area_min_factor = 0.0001
+    global_area_max_factor = 0.01
+    cluster_eps_scale = 2.0
+    cluster_min_samples = 3
+    cluster_recover_size_tolerance = 0.1
+    default_bg_color = None
+    color_test_initial_expand = 1
+    color_test_border_thickness = 1
+    color_tolerance = 25
+    duplicate_filter_size_tolerance = 5
+    duplicate_filter_color_tolerance = 2
+    duplicate_filter_shrink_pixels = 4
+    duplicate_filter_color_std_max_threshold = 20
+    debug = False
+    debug_dir = "./debug_output"  # 可选调试目录
+
+    # 调用主函数
+    final_boxes, filtered_out_boxes = process_image_from_array(
+        image=image,
+        image_name=image_name,
+        global_area_min_factor=global_area_min_factor,
+        global_area_max_factor=global_area_max_factor,
+        cluster_eps_scale=cluster_eps_scale,
+        cluster_min_samples=cluster_min_samples,
+        cluster_recover_size_tolerance=cluster_recover_size_tolerance,
+        default_bg_color=default_bg_color,
+        color_test_initial_expand=color_test_initial_expand,
+        color_test_border_thickness=color_test_border_thickness,
+        color_tolerance=color_tolerance,
+        duplicate_filter_size_tolerance=duplicate_filter_size_tolerance,
+        duplicate_filter_color_tolerance=duplicate_filter_color_tolerance,
+        duplicate_filter_shrink_pixels=duplicate_filter_shrink_pixels,
+        duplicate_filter_color_std_max_threshold=duplicate_filter_color_std_max_threshold,
+        debug=debug,
+        debug_dir=debug_dir
+    )
+
+    return final_boxes, filtered_out_boxes
+
+
+def extract_legend_box_from_path(image_path, save_path=None):
+    """
+    从图片路径中提取图例 box，并可视化：
+    - final_boxes：绿色填充 + 绿色边框
+    - filtered_out_boxes：红色填充 + 红色边框
+
+    参数：
+    - image_path: str，图片路径
+    - save_path: 可选，可视化图像保存路径
+
+    返回：
+    - final_boxes: List[List[(x, y)]]
+    - filtered_out_boxes: List[List[(x, y)]]
+    """
+    image = cv2.imread(image_path)
+    if image is None:
+        raise FileNotFoundError(f"无法加载图片: {image_path}")
+
+    image_name = os.path.basename(image_path)
+    final_boxes, filtered_out_boxes = extract_legend_box_from_image(image, image_name=image_name)
+
+    overlay = image.copy()
+    vis_img = image.copy()
+
+    # ✅ 绘制 final_boxes：绿色填充 + 边框
+    for box in final_boxes:
+        x1, y1 = box[0]
+        x3, y3 = box[2]
+        cv2.rectangle(overlay, (x1, y1), (x3, y3), (0, 255, 0), -1)  # 绿色填充
+        cv2.rectangle(vis_img, (x1, y1), (x3, y3), (0, 255, 0), 2)   # 绿色边框
+
+    # ✅ 绘制 filtered_out_boxes：红色填充 + 边框
+    for box in filtered_out_boxes:
+        x1, y1 = box[0]
+        x3, y3 = box[2]
+        cv2.rectangle(overlay, (x1, y1), (x3, y3), (0, 0, 255), -1)  # 红色填充
+        cv2.rectangle(vis_img, (x1, y1), (x3, y3), (0, 0, 255), 2)   # 红色边框
+
+    # 半透明融合
+    vis_img = cv2.addWeighted(overlay, 0.2, vis_img, 0.8, 0)
+
+    if save_path:
+        cv2.imwrite(save_path, vis_img)
+        print(f"[Saved] 可视化图像保存至: {save_path}")
+
+    return final_boxes, filtered_out_boxes
+
+
+def process_image(image_path, output_image_path, output_txt_path, **kwargs):
+    """
+    图像路径接口函数：读取图像，调用 process_image_from_array，保存可视化和 box 坐标
+    """
+    image = cv2.imread(image_path)
+    if image is None:
+        raise FileNotFoundError(f"Unable to load: {image_path}")
+
+    image_name = os.path.basename(image_path)
+    boxes, _ = process_image_from_array(image, image_name, **kwargs)
+
+    # 可视化绘图
+    vis_img = image.copy()
+    overlay = vis_img.copy()
+    for box in boxes:
+        x1, y1 = box[0]
+        x3, y3 = box[2]
+        cv2.rectangle(overlay, (x1, y1), (x3, y3), (0, 255, 0), -1)
+        cv2.rectangle(vis_img, (x1, y1), (x3, y3), (0, 255, 0), 2)
+    vis_img = cv2.addWeighted(overlay, 0.2, vis_img, 0.8, 0)
+
+    # 保存输出
+    cv2.imwrite(output_image_path, vis_img)
+    with open(output_txt_path, 'w') as f:
+        for points in boxes:
+            f.write(",".join([f"{x},{y}" for (x, y) in points]) + "\n")
+    print(f"Saved {output_image_path} to {output_txt_path}")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Batch processing for extracting map legend regions and detecting item boxes")
     parser.add_argument('--input_dir', type=str, help="Path to the input root directory containing numbered subfolders")
     parser.add_argument('--output_dir', type=str, help="Path to the output directory where results will be saved")
-    parser.add_argument('--model_path', type=str, help="Path to the YOLO model used for semantic segmentation")
-    parser.add_argument('--legend_area_min_factor', type=float, default=0.001,
-                        help="Minimum ratio of item box area to legend area when a legend is detected (default: 0.001)")
-    parser.add_argument('--legend_area_max_factor', type=float, default=0.1,
-                        help="Maximum ratio of item box area to legend area when a legend is detected (default: 0.1)")
     parser.add_argument('--global_area_min_factor', type=float, default=0.0001,
                         help="Minimum ratio of item box area to full image area when no legend is detected (default: 0.0001)")
     parser.add_argument('--global_area_max_factor', type=float, default=0.04,
                         help="Maximum ratio of item box area to full image area when no legend is detected (default: 0.01)")
-    parser.add_argument('--expand_pixel', type=int, default=40,
-                        help="Number of pixels to expand around the detected legend region for further processing (default: 30px)")
     parser.add_argument('--cluster_eps_scale', type=float, default=1.2,
                         help="Scale factor applied to estimated eps in DBSCAN clustering (default: 1.2)")
     parser.add_argument('--cluster_min_samples', type=int, default=3,
@@ -1319,8 +1524,6 @@ def main():
                         help='Number of pixels to shrink inward from each box edge before color analysis (default: 4)')
     parser.add_argument('--duplicate_filter_color_std_max_threshold', type=float, default=10,
                         help='Maximum allowed color standard deviation to consider a box as pure-color (default: 10)')
-    parser.add_argument('--skip_legend', action='store_true',
-                        help="If set, skip searching within legend box and directly detect items in the whole image.")
     parser.add_argument('--debug', action='store_true',
                         help="If set, save intermediate result.")
 
@@ -1329,71 +1532,77 @@ def main():
 
     os.makedirs(args.output_dir, exist_ok=True)
 
-    flag = True
+    if os.path.isfile(args.input_dir) and args.input_dir.lower().endswith(('.png', '.jpg', '.jpeg', '.tif', '.tiff')):
+        print(f"[Single] Detected image file: {args.input_dir}")
+        image = cv2.imread(args.input_dir)
+        if image is None:
+            raise FileNotFoundError(f"无法读取图像: {args.input_dir}")
+        name = os.path.splitext(os.path.basename(args.input_dir))[0]
+        save_path = os.path.join(args.output_dir, f"{name}_vis.png")
+        txt_path = os.path.join(args.output_dir, f"{name}.txt")
 
-    if flag:
-        subdirs = [d for d in os.listdir(args.input_dir) if os.path.isdir(os.path.join(args.input_dir, d))]
+        final_boxes, _ = extract_legend_box_from_path(args.input_dir, save_path=save_path)
 
-        default_bg_color = None
-        #default_bg_color = (255, 255, 255)
-
-        for subdir in subdirs:
-            image_folder = os.path.join(args.input_dir, subdir, 'image')
-            tif_files = glob.glob(os.path.join(image_folder, '*.tif'))
-            if not tif_files:
-                print(f"跳过 {subdir}，没有.tif文件")
-                continue
-            image_path = tif_files[0]
-
-            output_image_path = os.path.join(args.output_dir, f"{subdir}.png")
-            output_txt_path = os.path.join(args.output_dir, f"{subdir}.txt")
-
-            process_image(image_path, output_image_path, output_txt_path, args.model_path,
-                  legend_area_min_factor=args.legend_area_min_factor,
-                  legend_area_max_factor=args.legend_area_max_factor,
-                  global_area_min_factor=args.global_area_min_factor,
-                  global_area_max_factor=args.global_area_max_factor,
-                  expand_pixel=args.expand_pixel,
-                  cluster_eps_scale=args.cluster_eps_scale, cluster_min_samples=args.cluster_min_samples,
-                  cluster_recover_size_tolerance=args.cluster_recover_size_tolerance, default_bg_color=default_bg_color,
-                  color_test_initial_expand=args.color_test_initial_expand, color_test_border_thickness=args.color_test_border_thickness,
-                  color_tolerance=args.color_tolerance, duplicate_filter_size_tolerance=args.duplicate_filter_size_tolerance,
-                  duplicate_filter_color_tolerance=args.duplicate_filter_color_tolerance, duplicate_filter_shrink_pixels=args.duplicate_filter_shrink_pixels,
-                  duplicate_filter_color_std_max_threshold=args.duplicate_filter_color_std_max_threshold,
-                  skip_legend=args.skip_legend,
-                  debug=args.debug)
-
+        with open(txt_path, 'w') as f:
+            for box in final_boxes:
+                line = ",".join([f"{x},{y}" for (x, y) in box])
+                f.write(line + "\n")
+        print(f"[Saved] Box coords written to: {txt_path}")
     else:
-        # 获取输入目录下的所有.png文件
-        image_files = glob.glob(os.path.join(args.input_dir, '*.png'))
+        flag = True
+        if flag:
+            subdirs = [d for d in os.listdir(args.input_dir) if os.path.isdir(os.path.join(args.input_dir, d))]
 
-        default_bg_color = None  # or set to (255, 255, 255)
+            default_bg_color = None
+            #default_bg_color = (255, 255, 255)
 
-        for image_path in image_files:
-            # 获取文件名（不含扩展名），作为输出文件名的前缀
-            filename = os.path.splitext(os.path.basename(image_path))[0]
+            for subdir in subdirs:
+                image_folder = os.path.join(args.input_dir, subdir, 'image')
+                tif_files = glob.glob(os.path.join(image_folder, '*.tif'))
+                if not tif_files:
+                    print(f"跳过 {subdir}，没有.tif文件")
+                    continue
+                image_path = tif_files[0]
 
-            output_image_path = os.path.join(args.output_dir, f"{filename}.png")
-            output_txt_path = os.path.join(args.output_dir, f"{filename}.txt")
+                output_image_path = os.path.join(args.output_dir, f"{subdir}.png")
+                output_txt_path = os.path.join(args.output_dir, f"{subdir}.txt")
 
-            process_image(
-                image_path, output_image_path, output_txt_path, args.model_path,
-                legend_area_min_factor=args.legend_area_min_factor,
-                legend_area_max_factor=args.legend_area_max_factor,
-                global_area_min_factor=args.global_area_min_factor,
-                global_area_max_factor=args.global_area_max_factor,
-                expand_pixel=args.expand_pixel,
-                cluster_eps_scale=args.cluster_eps_scale,
-                cluster_min_samples=args.cluster_min_samples,
-                cluster_recover_size_tolerance=args.cluster_recover_size_tolerance,
-                default_bg_color=default_bg_color,
-                color_test_initial_expand=args.color_test_initial_expand,
-                color_test_border_thickness=args.color_test_border_thickness,
-                color_tolerance=args.color_tolerance,
-                skip_legend=args.skip_legend,
-                debug=args.debug)
+                process_image(image_path, output_image_path, output_txt_path,
+                    global_area_min_factor=args.global_area_min_factor,
+                    global_area_max_factor=args.global_area_max_factor,
+                    cluster_eps_scale=args.cluster_eps_scale, cluster_min_samples=args.cluster_min_samples,
+                    cluster_recover_size_tolerance=args.cluster_recover_size_tolerance, default_bg_color=default_bg_color,
+                    color_test_initial_expand=args.color_test_initial_expand, color_test_border_thickness=args.color_test_border_thickness,
+                    color_tolerance=args.color_tolerance, duplicate_filter_size_tolerance=args.duplicate_filter_size_tolerance,
+                    duplicate_filter_color_tolerance=args.duplicate_filter_color_tolerance, duplicate_filter_shrink_pixels=args.duplicate_filter_shrink_pixels,
+                    duplicate_filter_color_std_max_threshold=args.duplicate_filter_color_std_max_threshold,
+                    debug=args.debug)
 
+        else:
+            # 获取输入目录下的所有.png文件
+            image_files = glob.glob(os.path.join(args.input_dir, '*.png'))
 
+            default_bg_color = None  # or set to (255, 255, 255)
+
+            for image_path in image_files:
+                # 获取文件名（不含扩展名），作为输出文件名的前缀
+                filename = os.path.splitext(os.path.basename(image_path))[0]
+
+                output_image_path = os.path.join(args.output_dir, f"{filename}.png")
+                output_txt_path = os.path.join(args.output_dir, f"{filename}.txt")
+
+                process_image(
+                    image_path, output_image_path, output_txt_path,
+                    global_area_min_factor=args.global_area_min_factor,
+                    global_area_max_factor=args.global_area_max_factor,
+                    cluster_eps_scale=args.cluster_eps_scale,
+                    cluster_min_samples=args.cluster_min_samples,
+                    cluster_recover_size_tolerance=args.cluster_recover_size_tolerance,
+                    default_bg_color=default_bg_color,
+                    color_test_initial_expand=args.color_test_initial_expand,
+                    color_test_border_thickness=args.color_test_border_thickness,
+                    color_tolerance=args.color_tolerance,
+                    debug=args.debug)
 
 
 if __name__ == "__main__":
