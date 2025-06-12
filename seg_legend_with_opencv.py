@@ -1395,28 +1395,32 @@ def extract_legend_box_from_image(image, image_name=None):
     debug = False
     debug_dir = "./debug_output"  # 可选调试目录
 
-    # 调用主函数
-    final_boxes, filtered_out_boxes = process_image_from_array(
-        image=image,
-        image_name=image_name,
-        global_area_min_factor=global_area_min_factor,
-        global_area_max_factor=global_area_max_factor,
-        cluster_eps_scale=cluster_eps_scale,
-        cluster_min_samples=cluster_min_samples,
-        cluster_recover_size_tolerance=cluster_recover_size_tolerance,
-        default_bg_color=default_bg_color,
-        color_test_initial_expand=color_test_initial_expand,
-        color_test_border_thickness=color_test_border_thickness,
-        color_tolerance=color_tolerance,
-        duplicate_filter_size_tolerance=duplicate_filter_size_tolerance,
-        duplicate_filter_color_tolerance=duplicate_filter_color_tolerance,
-        duplicate_filter_shrink_pixels=duplicate_filter_shrink_pixels,
-        duplicate_filter_color_std_max_threshold=duplicate_filter_color_std_max_threshold,
-        debug=debug,
-        debug_dir=debug_dir
-    )
+    correct_flag = True
+    try:
+        # 调用主函数
+        final_boxes, filtered_out_boxes = process_image_from_array(
+            image=image,
+            image_name=image_name,
+            global_area_min_factor=global_area_min_factor,
+            global_area_max_factor=global_area_max_factor,
+            cluster_eps_scale=cluster_eps_scale,
+            cluster_min_samples=cluster_min_samples,
+            cluster_recover_size_tolerance=cluster_recover_size_tolerance,
+            default_bg_color=default_bg_color,
+            color_test_initial_expand=color_test_initial_expand,
+            color_test_border_thickness=color_test_border_thickness,
+            color_tolerance=color_tolerance,
+            duplicate_filter_size_tolerance=duplicate_filter_size_tolerance,
+            duplicate_filter_color_tolerance=duplicate_filter_color_tolerance,
+            duplicate_filter_shrink_pixels=duplicate_filter_shrink_pixels,
+            duplicate_filter_color_std_max_threshold=duplicate_filter_color_std_max_threshold,
+            debug=debug,
+            debug_dir=debug_dir)
+    except:
+        correct_flag = False
+        return [], [], correct_flag
 
-    return final_boxes, filtered_out_boxes
+    return final_boxes, filtered_out_boxes, correct_flag
 
 
 def extract_legend_box_from_path(image_path, save_path=None):
