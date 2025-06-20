@@ -699,10 +699,22 @@ def filter_by_dominant_edge_color(image, boxes, labels, color_tolerance=15, buck
         print(f" - Cluster {label}: center = ({center_mean[0]:.1f}, {center_mean[1]:.1f}), "
               f"dominant RGB = {dom_color}, kept = {count_kept}/{count_in}")
 
+    # 删除只剩一个 box 的 cluster
+    label_to_boxes = defaultdict(list)
+    for box, label in zip(kept_boxes, kept_labels):
+        label_to_boxes[label].append(box)
+
+    valid_labels = [label for label, boxes in label_to_boxes.items() if len(boxes) > 1]
+
+    kept_boxes = [box for box, label in zip(kept_boxes, kept_labels) if label in valid_labels]
+    kept_labels = [label for label in kept_labels if label in valid_labels]
+
+    print(f"Removed clusters with only 1 box. Remaining clusters: {sorted(valid_labels)}")
+
     # 对所有 cluster 重新计算标准长宽（使用中位数）
     cluster_standards = {}
-    print ("New Cluster standard width and heights:")
-    for label in sorted(cluster_dominant.keys()):
+    print("New Cluster standard width and heights:")
+    for label in sorted(valid_labels):
         cluster_boxes = [box for box, l in zip(kept_boxes, kept_labels) if l == label]
         sizes = []
         for box in cluster_boxes:
@@ -1473,10 +1485,11 @@ def process_image(image_path, output_image_path, output_txt_path, model_path,
     recovered_boxes = recover_boxes_by_size_match(outlier_boxes+filtered_out_boxes+removed_by_color, cluster_standards, size_tolerance=cluster_recover_size_tolerance)
     #recovered_boxes = recover_boxes_by_size_match(outlier_boxes, cluster_standards, size_tolerance=cluster_recover_size_tolerance)
 
-    filtered_boxes = refine_boxes_by_size_consistency(kept_boxes, cluster_standards, size_tolerance=cluster_recover_size_tolerance)
+    filtered_boxes = refine_boxes_by_size_consistency(kept_boxes+recovered_boxes, cluster_standards, size_tolerance=cluster_recover_size_tolerance)
 
-    all_boxes = filtered_boxes + recovered_boxes
+    #all_boxes = filtered_boxes + recovered_boxes
     #print (all_boxes)
+    all_boxes = filtered_boxes
 
     if not all_boxes:
         print ("\n[Fallback] No box remained, fall back to boxes filtered out")
