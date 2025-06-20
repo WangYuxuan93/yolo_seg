@@ -1292,6 +1292,7 @@ def process_image(image_path, output_image_path, output_txt_path, model_path,
                   global_area_min_factor=0.0001, global_area_max_factor=0.01,
                   expand_pixel=30, cluster_eps_scale=2.0, cluster_min_samples=3,
                   cluster_recover_size_tolerance=0.1, default_bg_color=None,
+                  box_refine_size_tolerance=0.2,
                   color_test_initial_expand=1, color_test_border_thickness=1,
                   color_tolerance=25, duplicate_filter_size_tolerance=5,
                   duplicate_filter_color_tolerance=2, duplicate_filter_shrink_pixel_ratio=0.25,
@@ -1485,7 +1486,7 @@ def process_image(image_path, output_image_path, output_txt_path, model_path,
     recovered_boxes = recover_boxes_by_size_match(outlier_boxes+filtered_out_boxes+removed_by_color, cluster_standards, size_tolerance=cluster_recover_size_tolerance)
     #recovered_boxes = recover_boxes_by_size_match(outlier_boxes, cluster_standards, size_tolerance=cluster_recover_size_tolerance)
 
-    filtered_boxes = refine_boxes_by_size_consistency(kept_boxes+recovered_boxes, cluster_standards, size_tolerance=cluster_recover_size_tolerance)
+    filtered_boxes = refine_boxes_by_size_consistency(kept_boxes+recovered_boxes, cluster_standards, size_tolerance=box_refine_size_tolerance)
 
     #all_boxes = filtered_boxes + recovered_boxes
     #print (all_boxes)
@@ -1556,9 +1557,9 @@ def main():
                         help="Minimum ratio of item box area to legend area when a legend is detected (default: 0.001)")
     parser.add_argument('--legend_area_max_factor', type=float, default=0.1,
                         help="Maximum ratio of item box area to legend area when a legend is detected (default: 0.1)")
-    parser.add_argument('--global_area_min_factor', type=float, default=0.0001,
+    parser.add_argument('--global_area_min_factor', type=float, default=0.0005,
                         help="Minimum ratio of item box area to full image area when no legend is detected (default: 0.0001)")
-    parser.add_argument('--global_area_max_factor', type=float, default=0.04,
+    parser.add_argument('--global_area_max_factor', type=float, default=0.01,
                         help="Maximum ratio of item box area to full image area when no legend is detected (default: 0.01)")
     parser.add_argument('--expand_pixel', type=int, default=40,
                         help="Number of pixels to expand around the detected legend region for further processing (default: 30px)")
@@ -1566,7 +1567,9 @@ def main():
                         help="Scale factor applied to estimated eps in DBSCAN clustering (default: 1.2)")
     parser.add_argument('--cluster_min_samples', type=int, default=3,
                         help="Minimum number of neighbors required to form a cluster in DBSCAN (default: 3)")
-    parser.add_argument('--cluster_recover_size_tolerance', type=float, default=0.2,
+    parser.add_argument('--cluster_recover_size_tolerance', type=float, default=0.1,
+                        help="Tolerance ratio when matching width/height to recover outlier boxes from clustering (default: 0.2)")
+    parser.add_argument('--box_refine_size_tolerance', type=float, default=0.2,
                         help="Tolerance ratio when matching width/height to recover outlier boxes from clustering (default: 0.2)")
     parser.add_argument('--color_test_initial_expand', type=int, default=1,
                         help="Initial number of pixels to expand each box before checking border color uniformity (default: 1)")
@@ -1619,6 +1622,7 @@ def main():
                   expand_pixel=args.expand_pixel,
                   cluster_eps_scale=args.cluster_eps_scale, cluster_min_samples=args.cluster_min_samples,
                   cluster_recover_size_tolerance=args.cluster_recover_size_tolerance, default_bg_color=default_bg_color,
+                  box_refine_size_tolerance=args.box_refine_size_tolerance,
                   color_test_initial_expand=args.color_test_initial_expand, color_test_border_thickness=args.color_test_border_thickness,
                   color_tolerance=args.color_tolerance, duplicate_filter_size_tolerance=args.duplicate_filter_size_tolerance,
                   duplicate_filter_color_tolerance=args.duplicate_filter_color_tolerance, duplicate_filter_shrink_pixel_ratio=args.duplicate_filter_shrink_pixel_ratio,
@@ -1649,6 +1653,7 @@ def main():
                 cluster_eps_scale=args.cluster_eps_scale,
                 cluster_min_samples=args.cluster_min_samples,
                 cluster_recover_size_tolerance=args.cluster_recover_size_tolerance,
+                box_refine_size_tolerance=args.box_refine_size_tolerance,
                 default_bg_color=default_bg_color,
                 color_test_initial_expand=args.color_test_initial_expand,
                 color_test_border_thickness=args.color_test_border_thickness,
