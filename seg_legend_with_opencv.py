@@ -69,8 +69,8 @@ def obtain_legend_rectangle_bbox(main_img, legend_area,
     )
 
     # 尝试闭运算以增强连通性
-    kernel = np.ones((3, 3), np.uint8)
-    thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
+    #kernel = np.ones((3, 3), np.uint8)
+    #thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
 
     if binary_image_filename is not None:
         cv2.imwrite(binary_image_filename, thresh)
@@ -361,7 +361,6 @@ def filter_boxes_by_uniform_color(boxes, image, offset_xy=(0, 0),
 
     return [points for points, color in temp_kept], filtered_out_boxes
 
-
 def filter_by_dominant_edge_color(image, boxes, labels, color_tolerance=15, bucket_size=5,
                                    initial_expand=1, border_thickness=1, debug_dir=None, file_name="debug"):
     """
@@ -382,7 +381,7 @@ def filter_by_dominant_edge_color(image, boxes, labels, color_tolerance=15, buck
     - kept_labels: 对应 label
     - removed_boxes: 被剔除的原始四点 box
     """
-   
+
     print(f"\n[Cluster Color Filter]")
 
     def round_color(color, bucket=5):
@@ -569,7 +568,39 @@ def filter_by_dominant_edge_color(image, boxes, labels, color_tolerance=15, buck
         print(f" - Cluster {label}: center = ({center_mean[0]:.1f}, {center_mean[1]:.1f}), "
               f"dominant RGB = {dom_color}, kept = {count_kept}/{count_in}")
 
-    return kept_boxes, kept_labels, removed_boxes
+    # 删除只剩一个 box 的 cluster
+    label_to_boxes = defaultdict(list)
+    for box, label in zip(kept_boxes, kept_labels):
+        label_to_boxes[label].append(box)
+
+    valid_labels = [label for label, boxes in label_to_boxes.items() if len(boxes) > 1]
+
+    kept_boxes = [box for box, label in zip(kept_boxes, kept_labels) if label in valid_labels]
+    kept_labels = [label for label in kept_labels if label in valid_labels]
+
+    print(f"Removed clusters with only 1 box. Remaining clusters: {sorted(valid_labels)}")
+
+    # 对所有 cluster 重新计算标准长宽（使用中位数）
+    cluster_standards = {}
+    print("New Cluster standard width and heights:")
+    for label in sorted(valid_labels):
+        cluster_boxes = [box for box, l in zip(kept_boxes, kept_labels) if l == label]
+        sizes = []
+        for box in cluster_boxes:
+            xs = [p[0] for p in box]
+            ys = [p[1] for p in box]
+            w = max(xs) - min(xs)
+            h = max(ys) - min(ys)
+            sizes.append((w, h))
+        if sizes:
+            widths = [wh[0] for wh in sizes]
+            heights = [wh[1] for wh in sizes]
+            std_w = np.median(widths)
+            std_h = np.median(heights)
+            cluster_standards[label] = (std_w, std_h)
+            print(f" - Cluster {label}: width = {std_w:.1f}, height = {std_h:.1f} ({len(sizes)} boxes)")
+
+    return kept_boxes, kept_labels, removed_boxes, cluster_standards
 
 
 def recover_deleted_boxes_by_size_consistency(all_boxes, labels, outlier_boxes, size_tolerance=0.1):
@@ -1002,30 +1033,25 @@ def draw_clusters_with_labels(image, boxes, labels, save_path, thickness=2):
 def filter_duplicate_pure_color_boxes(
     boxes,
     image,
-    duplicate_filter_size_tolerance=2,
+    duplicate_filter_size_tolerance=20,
     duplicate_filter_color_tolerance=10,
-    shrink_pixels=2,
+    shrink_pixel_ratio=0.25,  # 缩减比例
     color_std_max_threshold=20,
     debug_output_dir=None,
     file_name="image"
 ):
     """
-    过滤重复纯色 box（尺寸一致 + 颜色一致 + 标准差低），并保存每个 box 的调试图像。
-
-    图像特征：
-    - 白色背景
-    - 居中 box（缩放到统一高度）
-    - 灰色边框标示 box 范围
-    - 左上角竖排显示 Mean, Std, Size 信息
+    过滤重复纯色 box（尺寸一致 + 颜色一致 + 标准差低），仅保存未被剔除的 box 的调试图像。
 
     参数：
     - boxes: List[List[(x, y)]]
     - image: 原图（BGR）
     - duplicate_filter_size_tolerance: 尺寸容差（像素）
     - duplicate_filter_color_tolerance: 颜色容差（欧氏距离）
-    - shrink_pixels: 从 box 四边向内收缩像素数
-    - debug_output_dir: 若不为 None，则保存所有 box 的 debug 图像
-    - file_name: 图像名前缀（通常为原图文件名）
+    - shrink_pixel_ratio: float，边缘缩减比例（如 0.2 表示缩减 20%）
+    - color_std_max_threshold: 判断为纯色的标准差上限
+    - debug_output_dir: 若指定，保存未被删除的 box 调试图像
+    - file_name: 保存图像前缀
 
     返回：
     - retained_boxes: 保留的 box
@@ -1037,31 +1063,29 @@ def filter_duplicate_pure_color_boxes(
         font = cv2.FONT_HERSHEY_SIMPLEX
         font_scale = 0.3
         thickness = 1
-        target_height = 64  # 统一缩放高度
+        target_height = 64
 
     def get_box_stats(box):
         x1, y1 = box[0]
         x3, y3 = box[2]
+        w, h = x3 - x1, y3 - y1
 
-        # 尝试收缩 box
-        x1s = min(x1 + shrink_pixels, x3 - 1)
-        x3s = max(x3 - shrink_pixels, x1 + 1)
-        y1s = min(y1 + shrink_pixels, y3 - 1)
-        y3s = max(y3 - shrink_pixels, y1 + 1)
+        shrink_pix = max(1, int(min(w, h) * shrink_pixel_ratio))
+        x1s = min(x1 + shrink_pix, x3 - 1)
+        x3s = max(x3 - shrink_pix, x1 + 1)
+        y1s = min(y1 + shrink_pix, y3 - 1)
+        y3s = max(y3 - shrink_pix, y1 + 1)
 
         roi = image[y1s:y3s, x1s:x3s]
-
-        # 如果收缩后的区域为空，退回原 box 区域
         if roi.size == 0:
             roi = image[y1:y3, x1:x3]
-            #return (0, 0), np.array([0, 0, 0]), np.array([255, 255, 255]), roi
 
         mean_color = np.mean(roi.reshape(-1, 3), axis=0)
         std_color = np.std(roi.reshape(-1, 3), axis=0)
-        w, h = x3 - x1, y3 - y1
         return (w, h), mean_color, std_color, roi
 
     group_map = defaultdict(list)
+    stats_list = []
 
     for idx, box in enumerate(boxes):
         size, mean_color, std_color, roi = get_box_stats(box)
@@ -1070,53 +1094,58 @@ def filter_duplicate_pure_color_boxes(
                           duplicate_filter_color_tolerance).astype(int))
         std_max = np.max(std_color)
 
-        # === 保存调试图像（所有 box） ===
-        if debug_output_dir and roi.size > 0:
-            mean_i = mean_color.astype(int)
-            std_i = std_color.astype(int)
-            lines = [
-                f"Mean: {tuple(mean_i)}",
-                f"Std:  {tuple(std_i)}",
-                f"Size: ({w},{h})"
-            ]
-
-            # === 缩放 roi 到统一高度 ===
-            scale = target_height / roi.shape[0]
-            new_w = max(1, int(roi.shape[1] * scale))
-            roi_resized = cv2.resize(roi, (new_w, target_height), interpolation=cv2.INTER_AREA)
-
-            # === 创建白色背景并加边框 ===
-            pad = 8
-            bg_h, bg_w = roi_resized.shape[0] + 2 * pad, roi_resized.shape[1] + 2 * pad
-            debug_img = np.ones((bg_h, bg_w, 3), dtype=np.uint8) * 255
-            debug_img[pad:pad + roi_resized.shape[0], pad:pad + roi_resized.shape[1]] = roi_resized
-            cv2.rectangle(debug_img, (pad, pad),
-                          (pad + roi_resized.shape[1] - 1, pad + roi_resized.shape[0] - 1),
-                          (180, 180, 180), 1)
-
-            for i, line in enumerate(lines):
-                y = 12 + i * 12
-                cv2.putText(debug_img, line, (5, y), font, font_scale, (0, 0, 255), thickness, cv2.LINE_AA)
-
-            debug_path = os.path.join(debug_output_dir, f"{file_name}_dup_box_{idx}_debug.png")
-            cv2.imwrite(debug_path, debug_img)
-
-        # === 满足纯色才分组 ===
         if std_max < color_std_max_threshold:
             key = (round(w / duplicate_filter_size_tolerance),
                    round(h / duplicate_filter_size_tolerance),
                    mean_rgb)
             group_map[key].append(idx)
 
-    retained, removed = [], set()
+        stats_list.append((idx, box, size, mean_color, std_color, roi))
+
+    #print (f"@@@@@@@@group map: {group_map}")
+
+    removed = set()
     for group in group_map.values():
         if len(group) >= 2:
             for idx in group:
                 removed.add(idx)
 
-    for idx, box in enumerate(boxes):
+    retained, removed_boxes = [], []
+    for idx, box, size, mean_color, std_color, roi in stats_list:
         if idx not in removed:
             retained.append(box)
+
+            if debug_output_dir and roi.size > 0:
+                mean_i = mean_color.astype(int)
+                std_i = std_color.astype(int)
+                w, h = size
+                lines = [
+                    f"Mean: {tuple(mean_i)}",
+                    f"Std:  {tuple(std_i)}",
+                    f"Size: ({w},{h})"
+                ]
+
+                scale = target_height / roi.shape[0]
+                new_w = max(1, int(roi.shape[1] * scale))
+                roi_resized = cv2.resize(roi, (new_w, target_height), interpolation=cv2.INTER_AREA)
+
+                pad = 8
+                bg_h, bg_w = roi_resized.shape[0] + 2 * pad, roi_resized.shape[1] + 2 * pad
+                debug_img = np.ones((bg_h, bg_w, 3), dtype=np.uint8) * 255
+                debug_img[pad:pad + roi_resized.shape[0], pad:pad + roi_resized.shape[1]] = roi_resized
+                cv2.rectangle(debug_img, (pad, pad),
+                              (pad + roi_resized.shape[1] - 1, pad + roi_resized.shape[0] - 1),
+                              (180, 180, 180), 1)
+
+                for i, line in enumerate(lines):
+                    y = 12 + i * 12
+                    cv2.putText(debug_img, line, (5, y), font, font_scale, (0, 0, 255), thickness, cv2.LINE_AA)
+
+                debug_path = os.path.join(debug_output_dir, f"{file_name}_kept_box_{idx}_debug.png")
+                cv2.imwrite(debug_path, debug_img)
+
+        else:
+            removed_boxes.append(box)
 
     print(f"\n[Duplicate Filter] Duplicate Pure-Color Box Filtering:")
     print(f"  Input  : {len(boxes)} boxes")
@@ -1126,158 +1155,7 @@ def filter_duplicate_pure_color_boxes(
         sample_key = list(group_map.keys())[0]
         print(f"  Sample removed group key: {sample_key}")
 
-    return retained, [boxes[i] for i in removed]
-
-
-"""
-def process_image(image_path, output_image_path, output_txt_path, model_path,
-                  legend_area_min_factor=0.001, legend_area_max_factor=0.1,
-                  global_area_min_factor=0.0001, global_area_max_factor=0.01,
-                  expand_pixel=30, cluster_eps_scale=2.0, cluster_min_samples=3,
-                  cluster_recover_size_tolerance=0.1, default_bg_color=None,
-                  color_test_initial_expand=1, color_test_border_thickness=1,
-                  color_tolerance=25, duplicate_filter_size_tolerance=5,
-                  duplicate_filter_color_tolerance=2, duplicate_filter_shrink_pixels=4,
-                  duplicate_filter_color_std_max_threshold=20,
-                  skip_legend=False, debug=True):
-    print(f"\n##################\nProcessing image：{image_path}")
-
-    # 获取 output_dir
-    output_dir = os.path.dirname(output_image_path)
-    
-    # 从文件名中提取编号部分（例如，假设图像名是 "3.png"，我们提取 "3"）
-    image_name = os.path.basename(output_image_path)
-    image_base_name, _ = os.path.splitext(image_name)  # 获取文件名部分，不带扩展名
-
-    main_img = cv2.imread(image_path)
-    if main_img is None:
-        raise FileNotFoundError(f"Unable to load: {image_path}")
-
-    h_img, w_img = main_img.shape[:2]
-    vis_img = main_img.copy()
-    overlay = vis_img.copy()  # 用来画半透明区域
-
-    all_boxes = []
-    found_legend = False
-    legend_counter = 0  # 用于编号
-    filtered_out_boxes = []
-    rec_id = 0
-
-    all_matched_pairs = []
-
-    legend_crop = main_img
-    legend_area = w_img * h_img
-
-    rectangles = obtain_legend_rectangle_bbox(legend_crop, legend_area,
-                                                area_min_factor=global_area_min_factor,
-                                                area_max_factor=global_area_max_factor,
-                                                binary_image_filename=os.path.join(output_dir, f"{image_base_name}_legend_binary.png") if debug else None,
-                                                contour_image_filename=os.path.join(output_dir, f"{image_base_name}_contour.png")) if debug else None
-
-    selected = remove_overlapping_rect_simple(rectangles)
-
-    #matched_pairs = find_item_boxes_with_nearby_text(selected, predicted_text_boxes, offset_xy=(0, 0))
-    #all_matched_pairs.extend(matched_pairs)
-
-    kept_boxes, filtered_boxes = filter_boxes_by_uniform_color(selected,
-                                                                image=main_img,
-                                                                offset_xy=(0, 0),  # legend 裁剪偏移
-                                                                initial_expand=color_test_initial_expand,
-                                                                border_thickness=color_test_border_thickness,
-                                                                default_bg_color=default_bg_color,
-                                                                color_tolerance=color_tolerance,
-                                                                debug=debug,
-                                                                debug_dir=output_dir,
-                                                                file_name=image_base_name,
-                                                                legend_counter=legend_counter,
-                                                                start_index=rec_id)
-    all_boxes.extend(kept_boxes)
-    filtered_out_boxes.extend(filtered_boxes)
-    rec_id += len(selected)
-
-    all_boxes = remove_overlapping_boxes_simple(all_boxes, type="all")
-
-    filtered_out_boxes = remove_overlapping_boxes_simple(filtered_out_boxes, type="filtered out")
-
-    #all_boxes = remove_boxes_with_small_edge_distance(all_boxes, min_distance=5)
-
-    all_boxes, removed_boxes = filter_duplicate_pure_color_boxes(all_boxes, main_img,
-                                                                duplicate_filter_size_tolerance=duplicate_filter_size_tolerance,
-                                                                duplicate_filter_color_tolerance=duplicate_filter_color_tolerance,
-                                                                shrink_pixels=duplicate_filter_shrink_pixels,
-                                                                color_std_max_threshold=duplicate_filter_color_std_max_threshold,
-                                                                debug_output_dir=output_dir if debug else None,
-                                                                file_name=image_base_name)
-
-    # --- 融合overlay到vis_img，产生半透明填充效果 ---
-    clustered_boxes, labels, outlier_boxes, cluster_standards = filter_isolated_boxes_by_clustering_auto_eps(all_boxes, eps_scale=cluster_eps_scale, min_samples=cluster_min_samples)
-
-    if debug:
-        draw_clusters_with_labels(image=main_img,
-                                boxes=clustered_boxes,
-                                labels=labels,
-                                save_path=os.path.join(output_dir,f"{image_base_name}_cluster_before_color_filter.png"))
-
-    kept_boxes, kept_labels, removed_by_color = filter_by_dominant_edge_color(image=main_img,
-                                                                                boxes=clustered_boxes,
-                                                                                labels=labels,
-                                                                                color_tolerance=color_tolerance,
-                                                                                bucket_size=10,
-                                                                                initial_expand=color_test_initial_expand,
-                                                                                border_thickness=color_test_border_thickness,
-                                                                                debug_dir=output_dir if debug else None,
-                                                                                file_name=image_base_name)
-
-    if debug:
-        draw_clusters_with_labels(
-            image=main_img,
-            boxes=kept_boxes,
-            labels=kept_labels,
-            save_path=os.path.join(output_dir,f"{image_base_name}_cluster.png"))
-
-
-    recovered_boxes = recover_boxes_by_size_match(outlier_boxes+filtered_out_boxes+removed_by_color, cluster_standards, size_tolerance=cluster_recover_size_tolerance)
-    #recovered_boxes = recover_boxes_by_size_match(outlier_boxes, cluster_standards, size_tolerance=cluster_recover_size_tolerance)
-
-    filtered_boxes = refine_boxes_by_size_consistency(kept_boxes, cluster_standards, size_tolerance=cluster_recover_size_tolerance)
-
-    all_boxes = filtered_boxes + recovered_boxes
-    #print (all_boxes)
-
-    if not all_boxes:
-        print ("\n[Fallback] No box remained, fall back to boxes filtered out")
-        print ("Final box: {}".format(len(filtered_out_boxes)))
-        all_boxes = filtered_out_boxes
-
-    # Step 2：统一绘制 overlay 和 vis_img 中的框
-    for box in all_boxes:
-        # 每个 box 是四个点 [(x1, y1), (x2, y1), (x2, y2), (x1, y2)]
-        x1, y1 = box[0]
-        x3, y3 = box[2]
-
-        # 填充区域
-        cv2.rectangle(overlay, (x1, y1), (x3, y3), (0, 255, 0), -1)
-        # 边框
-        cv2.rectangle(vis_img, (x1, y1), (x3, y3), (0, 255, 0), 2)
-
-    # ✅ 额外画出红色的 predicted text boxes
-    #for box in predicted_text_boxes:
-    #    x1, y1 = box[0]
-    #    x3, y3 = box[2]
-    #    cv2.rectangle(vis_img, (x1, y1), (x3, y3), (0, 0, 255), 2)
-
-    alpha = 0.2  # 半透明程度
-    vis_img = cv2.addWeighted(overlay, alpha, vis_img, 1 - alpha, 0)
-
-    cv2.imwrite(output_image_path, vis_img)
-
-    with open(output_txt_path, 'w') as f:
-        for points in all_boxes:
-            line = ",".join([f"{px},{py}" for (px, py) in points])
-            f.write(line + "\n")
-
-    print(f"Saved {output_image_path} to {output_txt_path}")
-"""
+    return retained, removed_boxes
 
 
 def process_image_from_array(image, image_name,
@@ -1286,7 +1164,7 @@ def process_image_from_array(image, image_name,
                              cluster_recover_size_tolerance=0.1, default_bg_color=None,
                              color_test_initial_expand=1, color_test_border_thickness=1,
                              color_tolerance=25, duplicate_filter_size_tolerance=5,
-                             duplicate_filter_color_tolerance=2, duplicate_filter_shrink_pixels=4,
+                             duplicate_filter_color_tolerance=2, duplicate_filter_shrink_pixel_ratio=0.25,
                              duplicate_filter_color_std_max_threshold=20,
                              debug=True, debug_dir="."):
     """
@@ -1328,7 +1206,7 @@ def process_image_from_array(image, image_name,
         all_boxes, image,
         duplicate_filter_size_tolerance=duplicate_filter_size_tolerance,
         duplicate_filter_color_tolerance=duplicate_filter_color_tolerance,
-        shrink_pixels=duplicate_filter_shrink_pixels,
+        shrink_pixel_ratio=duplicate_filter_shrink_pixel_ratio,
         color_std_max_threshold=duplicate_filter_color_std_max_threshold,
         debug_output_dir=debug_dir if debug else None,
         file_name=image_base_name)
@@ -1340,13 +1218,14 @@ def process_image_from_array(image, image_name,
         draw_clusters_with_labels(image, clustered_boxes, labels,
                                   save_path=os.path.join(debug_dir, f"{image_base_name}_cluster_before_color_filter.png"))
 
-    kept_boxes, kept_labels, removed_by_color = filter_by_dominant_edge_color(
+    kept_boxes, kept_labels, removed_by_color, new_cluster_standards = filter_by_dominant_edge_color(
         image=image, boxes=clustered_boxes, labels=labels,
         color_tolerance=color_tolerance, bucket_size=10,
         initial_expand=color_test_initial_expand,
         border_thickness=color_test_border_thickness,
         debug_dir=debug_dir if debug else None,
         file_name=image_base_name)
+    cluster_standards = new_cluster_standards
 
     if debug:
         draw_clusters_with_labels(image, kept_boxes, kept_labels,
@@ -1358,9 +1237,9 @@ def process_image_from_array(image, image_name,
         size_tolerance=cluster_recover_size_tolerance)
 
     filtered_boxes, failed_boxes = refine_boxes_by_size_consistency(
-        kept_boxes, cluster_standards, size_tolerance=cluster_recover_size_tolerance)
+        kept_boxes+recovered_boxes, cluster_standards, size_tolerance=cluster_recover_size_tolerance)
 
-    final_boxes = filtered_boxes + recovered_boxes
+    final_boxes = filtered_boxes
     if not final_boxes:
         print("\n[Fallback] No box remained, fall back to filtered out")
         final_boxes = filtered_out_boxes
@@ -1388,10 +1267,10 @@ def extract_legend_box_from_image(image, image_name=None):
     color_test_initial_expand = 1
     color_test_border_thickness = 1
     color_tolerance = 25
-    duplicate_filter_size_tolerance = 5
-    duplicate_filter_color_tolerance = 2
-    duplicate_filter_shrink_pixels = 4
-    duplicate_filter_color_std_max_threshold = 20
+    duplicate_filter_size_tolerance = 20
+    duplicate_filter_color_tolerance = 5
+    duplicate_filter_shrink_pixel_ratio = 0.25
+    duplicate_filter_color_std_max_threshold = 10
     debug = False
     debug_dir = "./debug_output"  # 可选调试目录
 
@@ -1412,7 +1291,7 @@ def extract_legend_box_from_image(image, image_name=None):
             color_tolerance=color_tolerance,
             duplicate_filter_size_tolerance=duplicate_filter_size_tolerance,
             duplicate_filter_color_tolerance=duplicate_filter_color_tolerance,
-            duplicate_filter_shrink_pixels=duplicate_filter_shrink_pixels,
+            duplicate_filter_shrink_pixel_ratio=duplicate_filter_shrink_pixel_ratio,
             duplicate_filter_color_std_max_threshold=duplicate_filter_color_std_max_threshold,
             debug=debug,
             debug_dir=debug_dir)
@@ -1520,12 +1399,12 @@ def main():
                         help="Thickness of the border (in pixels) to test for color consistency around the expanded box (default: 1)")
     parser.add_argument('--color_tolerance', type=float, default=40,
                         help="Tolerance for average border color difference (default: 25). ")
-    parser.add_argument('--duplicate_filter_size_tolerance', type=int, default=5,
-                        help='Size tolerance (in pixels) for grouping boxes by dimensions (default: 5)')
-    parser.add_argument('--duplicate_filter_color_tolerance', type=int, default=2,
-                        help='Color rounding tolerance for grouping boxes by color (default: 2)')
-    parser.add_argument('--duplicate_filter_shrink_pixels', type=int, default=5,
-                        help='Number of pixels to shrink inward from each box edge before color analysis (default: 4)')
+    parser.add_argument('--duplicate_filter_size_tolerance', type=int, default=20,
+                        help='Size tolerance (in pixels) for grouping boxes by dimensions (default: 20)')
+    parser.add_argument('--duplicate_filter_color_tolerance', type=int, default=5,
+                        help='Color rounding tolerance for grouping boxes by color (default: 5)')
+    parser.add_argument('--duplicate_filter_shrink_pixel_ratio', type=float, default=0.25,
+                        help='Number of pixels to shrink inward from each box edge before color analysis (default: 0.25)')
     parser.add_argument('--duplicate_filter_color_std_max_threshold', type=float, default=10,
                         help='Maximum allowed color standard deviation to consider a box as pure-color (default: 10)')
     parser.add_argument('--debug', action='store_true',
@@ -1578,7 +1457,7 @@ def main():
                     cluster_recover_size_tolerance=args.cluster_recover_size_tolerance, default_bg_color=default_bg_color,
                     color_test_initial_expand=args.color_test_initial_expand, color_test_border_thickness=args.color_test_border_thickness,
                     color_tolerance=args.color_tolerance, duplicate_filter_size_tolerance=args.duplicate_filter_size_tolerance,
-                    duplicate_filter_color_tolerance=args.duplicate_filter_color_tolerance, duplicate_filter_shrink_pixels=args.duplicate_filter_shrink_pixels,
+                    duplicate_filter_color_tolerance=args.duplicate_filter_color_tolerance, duplicate_filter_shrink_pixel_ratio=args.duplicate_filter_shrink_pixel_ratio,
                     duplicate_filter_color_std_max_threshold=args.duplicate_filter_color_std_max_threshold,
                     debug=args.debug)
 
