@@ -953,7 +953,7 @@ def remove_overlapping_boxes_simple(rectangles, type="all"):
     return selected
 
 
-def refine_boxes_by_size_consistency(boxes, cluster_standards, size_tolerance=0.1):
+def refine_boxes_by_size_consistency(boxes, cluster_standards, size_tolerance=0.2):
     """
     进一步过滤通过初步聚类保留下来的 box，仅保留尺寸接近标准的框。
 
@@ -1230,7 +1230,7 @@ def filter_duplicate_pure_color_boxes(
 
         stats_list.append((idx, box, size, mean_color, std_color, roi))
 
-    #print (f"@@@@@@@@group map: {group_map}")
+    print (f"@@@@@@@@group map: {group_map}")
 
     removed = set()
     for group in group_map.values():
@@ -1557,7 +1557,7 @@ def main():
                         help="Minimum ratio of item box area to legend area when a legend is detected (default: 0.001)")
     parser.add_argument('--legend_area_max_factor', type=float, default=0.1,
                         help="Maximum ratio of item box area to legend area when a legend is detected (default: 0.1)")
-    parser.add_argument('--global_area_min_factor', type=float, default=0.0005,
+    parser.add_argument('--global_area_min_factor', type=float, default=0.0003,
                         help="Minimum ratio of item box area to full image area when no legend is detected (default: 0.0001)")
     parser.add_argument('--global_area_max_factor', type=float, default=0.01,
                         help="Maximum ratio of item box area to full image area when no legend is detected (default: 0.01)")
@@ -1579,7 +1579,7 @@ def main():
                         help="Tolerance for average border color difference (default: 25). ")
     parser.add_argument('--duplicate_filter_size_tolerance', type=int, default=20,
                         help='Size tolerance (in pixels) for grouping boxes by dimensions (default: 20)')
-    parser.add_argument('--duplicate_filter_color_tolerance', type=int, default=5,
+    parser.add_argument('--duplicate_filter_color_tolerance', type=int, default=8,
                         help='Color rounding tolerance for grouping boxes by color (default: 5)')
     parser.add_argument('--duplicate_filter_shrink_pixel_ratio', type=float, default=0.25,
                         help='Number of pixels to shrink inward from each box edge before color analysis (default: 0.25)')
