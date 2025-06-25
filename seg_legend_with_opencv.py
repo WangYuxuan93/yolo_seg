@@ -1158,6 +1158,111 @@ def filter_duplicate_pure_color_boxes(
     return retained, removed_boxes
 
 
+def filter_boxes_by_inner_white_ratio(
+    boxes, image,
+    min_white_ratio=0.5, max_white_ratio=0.95,
+    white_thresh_global=230, black_thresh_global=25,
+    white_black_map_thresh=0.75,
+    white_thresh_box=240,
+    shrink_ratio=0.1,
+    debug=True, debug_output_path=None
+):
+    """
+    根据 box 内部白色像素占比过滤线状或点状 box（非面状）
+
+    参数：
+    - boxes: list of 4-point boxes
+    - image: 输入图像（BGR）
+    - min_white_ratio, max_white_ratio: box 内白色像素占比在该范围内则被过滤
+    - white_thresh_global, black_thresh_global: 用于整图黑白判断的灰度阈值
+    - white_black_map_thresh: 白+黑像素占比超过该阈值则认为是黑白图，跳过处理
+    - white_thresh_box: 用于 box 内二值化统计白色比例的灰度阈值
+    - shrink_ratio: 每个 box 在判断白色前，从四边各缩该比例（相对于 box 宽/高）
+    - debug: 是否输出调试图像
+    - debug_output_path: 若 debug=True，保存调试图的路径
+
+    返回：
+    - filtered: 过滤后保留的 box 列表
+    """
+    print(f"[Filter Line Box] Filtering by White Ratio")
+    print(f"Box input: {len(boxes)}")
+
+    # Step 1: 判断整图是否为黑白图
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    _, binary_white = cv2.threshold(gray, white_thresh_global, 255, cv2.THRESH_BINARY)
+    white_ratio_img = np.sum(binary_white == 255) / (gray.shape[0] * gray.shape[1])
+
+    _, binary_black = cv2.threshold(gray, black_thresh_global, 255, cv2.THRESH_BINARY_INV)
+    black_ratio_img = np.sum(binary_black == 255) / (gray.shape[0] * gray.shape[1])
+
+    if white_ratio_img + black_ratio_img > white_black_map_thresh:
+        print("Detected black-and-white map — skip filtering")
+        return boxes
+
+    # Step 2: box 白色占比过滤
+    filtered = []
+    removed_boxes = []
+    white_ratios = []
+
+    for box in boxes:
+        x_min = max(min(p[0] for p in box), 0)
+        x_max = min(max(p[0] for p in box), image.shape[1])
+        y_min = max(min(p[1] for p in box), 0)
+        y_max = min(max(p[1] for p in box), image.shape[0])
+
+        box_w = x_max - x_min
+        box_h = y_max - y_min
+        x_shrink = int(box_w * shrink_ratio)
+        y_shrink = int(box_h * shrink_ratio)
+
+        x_min += x_shrink
+        x_max -= x_shrink
+        y_min += y_shrink
+        y_max -= y_shrink
+
+        if x_max <= x_min + 1 or y_max <= y_min + 1:
+            continue
+
+        roi = image[y_min:y_max, x_min:x_max]
+        gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        _, binary_roi = cv2.threshold(gray_roi, white_thresh_box, 255, cv2.THRESH_BINARY)
+        white_ratio = np.sum(binary_roi == 255) / (roi.shape[0] * roi.shape[1])
+
+        if min_white_ratio <= white_ratio <= max_white_ratio:
+            removed_boxes.append(box)
+            white_ratios.append(white_ratio)
+        else:
+            filtered.append(box)
+
+    print(f"Box output: {len(filtered)}")
+
+    # Step 3: debug 可视化
+    if debug and debug_output_path:
+        vis_image = image.copy()
+
+        # 图像左上角写整图白黑比例
+        text_summary = f"White: {white_ratio_img*100:.1f}%, Black: {black_ratio_img*100:.1f}%"
+        cv2.putText(vis_image, text_summary, (10, 20),
+                    fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=0.6,
+                    color=(0, 0, 255), thickness=2, lineType=cv2.LINE_AA)
+
+        for box, ratio in zip(removed_boxes, white_ratios):
+            box_np = np.array(box, dtype=np.int32)
+            cv2.polylines(vis_image, [box_np], isClosed=True, color=(0, 0, 255), thickness=2)
+
+            x_text = min(p[0] for p in box)
+            y_text = min(p[1] for p in box) - 5
+            cv2.putText(vis_image, f"{ratio:.2f}", (x_text, max(y_text, 10)),
+                        fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=0.4,
+                        color=(0, 0, 255), thickness=1, lineType=cv2.LINE_AA)
+
+        os.makedirs(os.path.dirname(debug_output_path), exist_ok=True)
+        cv2.imwrite(debug_output_path, vis_image)
+        print(f"Debug image saved to {debug_output_path}")
+
+    return filtered
+
+
 def process_image_from_array(image, image_name,
                              global_area_min_factor=0.0001, global_area_max_factor=0.01,
                              cluster_eps_scale=2.0, cluster_min_samples=3,
@@ -1167,7 +1272,9 @@ def process_image_from_array(image, image_name,
                              color_tolerance=25, duplicate_filter_size_tolerance=5,
                              duplicate_filter_color_tolerance=2, duplicate_filter_shrink_pixel_ratio=0.25,
                              duplicate_filter_color_std_max_threshold=20,
-                             debug=True, debug_dir="."):
+                             use_white_ratio_filter=True,
+                             white_ratio_filter_params=None,
+                             debug=False, debug_dir="."):
     """
     从图像对象中提取图例项 box，返回通过筛选的 box 列表（四点坐标形式）
     """
@@ -1244,6 +1351,27 @@ def process_image_from_array(image, image_name,
     if not final_boxes:
         print("\n[Fallback] No box remained, fall back to filtered out")
         final_boxes = filtered_out_boxes
+    
+    if use_white_ratio_filter:
+        # 默认参数字典
+        default_white_ratio_params = {
+            'min_white_ratio': 0.5,
+            'max_white_ratio': 0.95,
+            'white_thresh_global': 240,
+            'black_thresh_global': 50,
+            'white_black_map_thresh': 0.75,
+            'white_thresh_box': 250,
+            'shrink_ratio': 0.15,
+            'debug': True,
+            'debug_output_path': os.path.join(debug_dir, f"{image_base_name}_white_ratio_filtered.png")
+        }
+        # 使用传入参数覆盖默认值
+        if white_ratio_filter_params:
+            default_white_ratio_params.update(white_ratio_filter_params)
+
+        final_boxes = filter_boxes_by_inner_white_ratio(
+            final_boxes, image, **default_white_ratio_params
+        )
 
     return final_boxes, filtered_out_boxes + failed_boxes
 
@@ -1287,6 +1415,26 @@ def extract_legend_box_from_image(image, image_name=None):
     duplicate_filter_shrink_pixel_ratio = 0.25
     # Maximum allowed color standard deviation to consider a box "pure color"
     duplicate_filter_color_std_max_threshold = 10
+
+    # Whether to apply white pixel ratio filtering to remove line/point-like boxes
+    use_white_ratio_filter = True
+    white_ratio_params = {
+        # Minimum white pixel ratio within the box; boxes below this will be kept
+        'min_white_ratio': 0.5,
+        # Maximum white pixel ratio within the box; boxes above this will be kept
+        'max_white_ratio': 0.95,
+        # Threshold to binarize the whole image to determine "white" pixels (for black-and-white map check)
+        'white_thresh_global': 240,
+        # Threshold to binarize the whole image to determine "black" pixels (for black-and-white map check)
+        'black_thresh_global': 50,
+        # If white + black ratio of the entire image exceeds this value, skip the filtering step
+        'white_black_map_thresh': 0.75,
+        # Threshold to binarize the cropped box area to measure internal white pixel ratio
+        'white_thresh_box': 250,
+        # Percentage of box width/height to shrink inward on all four sides before measuring white ratio
+        'shrink_ratio': 0.15,
+        'debug': False
+    }
     debug = False
     debug_dir = "./debug_output"  # 可选调试目录
 
@@ -1310,6 +1458,8 @@ def extract_legend_box_from_image(image, image_name=None):
             duplicate_filter_color_tolerance=duplicate_filter_color_tolerance,
             duplicate_filter_shrink_pixel_ratio=duplicate_filter_shrink_pixel_ratio,
             duplicate_filter_color_std_max_threshold=duplicate_filter_color_std_max_threshold,
+            use_white_ratio_filter=use_white_ratio_filter,
+            white_ratio_filter_params=white_ratio_params,
             debug=debug,
             debug_dir=debug_dir)
     except:
@@ -1375,7 +1525,7 @@ def process_image(image_path, output_image_path, output_txt_path, **kwargs):
     if image is None:
         raise FileNotFoundError(f"Unable to load: {image_path}")
 
-    image_name = os.path.basename(image_path)
+    image_name = os.path.basename(output_image_path)
     boxes, _ = process_image_from_array(image, image_name, **kwargs)
 
     # 可视化绘图
@@ -1478,7 +1628,7 @@ def main():
                     color_tolerance=args.color_tolerance, duplicate_filter_size_tolerance=args.duplicate_filter_size_tolerance,
                     duplicate_filter_color_tolerance=args.duplicate_filter_color_tolerance, duplicate_filter_shrink_pixel_ratio=args.duplicate_filter_shrink_pixel_ratio,
                     duplicate_filter_color_std_max_threshold=args.duplicate_filter_color_std_max_threshold,
-                    debug=args.debug)
+                    debug=args.debug, debug_dir=args.output_dir)
 
         else:
             # 获取输入目录下的所有.png文件
@@ -1504,7 +1654,8 @@ def main():
                     color_test_initial_expand=args.color_test_initial_expand,
                     color_test_border_thickness=args.color_test_border_thickness,
                     color_tolerance=args.color_tolerance,
-                    debug=args.debug)
+                    debug=args.debug, 
+                    debug_dir=args.output_dir)
 
 
 if __name__ == "__main__":
