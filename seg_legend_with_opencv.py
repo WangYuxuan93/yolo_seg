@@ -1465,6 +1465,14 @@ def extract_legend_box_from_image(image, image_name=None):
     except:
         correct_flag = False
         return [], [], correct_flag
+    
+    # ✅ 对 final_boxes 进行从上到下，从左到右排序
+    def sort_key(box):
+        y = min(p[1] for p in box)
+        x = min(p[0] for p in box)
+        return (y, x)
+
+    final_boxes = sorted(final_boxes, key=sort_key)
 
     return final_boxes, filtered_out_boxes, correct_flag
 
@@ -1472,7 +1480,7 @@ def extract_legend_box_from_image(image, image_name=None):
 def extract_legend_box_from_path(image_path, save_path=None):
     """
     从图片路径中提取图例 box，并可视化：
-    - final_boxes：绿色填充 + 绿色边框
+    - final_boxes：绿色填充 + 绿色边框 + 顺序编号
     - filtered_out_boxes：红色填充 + 红色边框
 
     参数：
@@ -1488,17 +1496,25 @@ def extract_legend_box_from_path(image_path, save_path=None):
         raise FileNotFoundError(f"无法加载图片: {image_path}")
 
     image_name = os.path.basename(image_path)
-    final_boxes, filtered_out_boxes = extract_legend_box_from_image(image, image_name=image_name)
+    final_boxes, filtered_out_boxes, _ = extract_legend_box_from_image(image, image_name=image_name)
 
     overlay = image.copy()
     vis_img = image.copy()
 
-    # ✅ 绘制 final_boxes：绿色填充 + 边框
-    for box in final_boxes:
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = 0.5
+    font_thickness = 1
+
+    # ✅ 绘制 final_boxes：绿色填充 + 边框 + 编号
+    for idx, box in enumerate(final_boxes):
         x1, y1 = box[0]
         x3, y3 = box[2]
-        cv2.rectangle(overlay, (x1, y1), (x3, y3), (0, 255, 0), -1)  # 绿色填充
-        cv2.rectangle(vis_img, (x1, y1), (x3, y3), (0, 255, 0), 2)   # 绿色边框
+        cv2.rectangle(overlay, (x1, y1), (x3, y3), (0, 255, 0), -1)   # 绿色填充
+        cv2.rectangle(vis_img, (x1, y1), (x3, y3), (0, 255, 0), 2)    # 绿色边框
+
+        # 标注编号（左上角）
+        label = str(idx + 1)
+        cv2.putText(vis_img, label, (x1 + 3, y1 + 15), font, font_scale, (0, 128, 0), font_thickness, cv2.LINE_AA)
 
     # ✅ 绘制 filtered_out_boxes：红色填充 + 边框
     for box in filtered_out_boxes:
