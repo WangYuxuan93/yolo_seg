@@ -209,6 +209,86 @@ def filter_ocr_boxes_inside_legends(ocr_boxes, legend_boxes, overlap_thresh=0.8)
 
     return filtered
 
+def split_all_ocr_boxes_by_projection(image, ocr_boxes, min_width=5, min_blank_width=6, debug=False):
+    """
+    批量处理OCR框列表，拆分被误合并的文字区域。
+
+    参数：
+    - image: OpenCV图像
+    - ocr_boxes: List[box]，每个box是四点坐标（可带文本）
+    - min_width: 拆分后子框的最小宽度
+    - min_blank_width: 垂直空白宽度大于此值才认为是切割点
+    - debug: 是否打印调试信息
+
+    返回：
+    - new_boxes: List[box]，处理后的OCR框列表
+    """
+    def split_ocr_box_by_projection(image, box, min_width=5, min_blank_width=6):
+        cropped = crop_quad(image, box[:4])
+        gray = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY)
+        _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
+        h, w = binary.shape
+        vertical_proj = np.sum(binary, axis=0)
+
+        blank_regions = []
+        is_blank = False
+        start = 0
+        for i, val in enumerate(vertical_proj):
+            if val == 0:
+                if not is_blank:
+                    is_blank = True
+                    start = i
+            else:
+                if is_blank:
+                    is_blank = False
+                    if i - start >= min_blank_width:
+                        blank_regions.append((start, i))
+
+        split_indices = [(s + e) // 2 for s, e in blank_regions]
+        if not split_indices:
+            return [box]
+
+        splits = [0] + split_indices + [w]
+
+        new_boxes = []
+        for i in range(len(splits) - 1):
+            x_start, x_end = splits[i], splits[i + 1]
+            if x_end - x_start < min_width:
+                continue
+
+            xs = [pt[0] for pt in box[:4]]
+            ys = [pt[1] for pt in box[:4]]
+            x1, y1 = min(xs), min(ys)
+            x2, y2 = max(xs), max(ys)
+
+            sub_x1 = int(x1 + x_start * (x2 - x1) / w)
+            sub_x2 = int(x1 + x_end * (x2 - x1) / w)
+            new_box = [
+                [sub_x1, y1],
+                [sub_x2, y1],
+                [sub_x2, y2],
+                [sub_x1, y2]
+            ]
+            if len(box) == 5:
+                new_box.append(box[4])
+            new_boxes.append(new_box)
+
+            if debug:
+                print(f"  Sub-box {i}: x=({x_start}, {x_end}) => [{sub_x1}, {y1}, {sub_x2}, {y2}]")
+
+        return new_boxes if new_boxes else [box]
+
+    # 外层遍历所有OCR框，逐个拆分
+    new_boxes = []
+    for i, box in enumerate(ocr_boxes):
+        if debug:
+            print(f"[{i}] Processing box: {box}")
+        split_result = split_ocr_box_by_projection(image, box, min_width, min_blank_width)
+        new_boxes.extend(split_result)
+
+    return new_boxes
+
 
 def adjust_ocr_boxes_by_cutting_overlapping_legends(ocr_boxes, legend_boxes, min_width=5):
     def box_from_rect(rect, original_occ):
@@ -509,6 +589,11 @@ def process_folder(image_folder, predictor_func, output_folder, label, save_ocr=
 
         raw_ocr_boxes = predictor_func(image)
 
+        # 自动拆分合并文字的 OCR 框
+        split_ocr_boxes = split_all_ocr_boxes_by_projection(
+            image, raw_ocr_boxes, min_width=6, min_blank_width=6, debug=False
+        )
+
         legend_results_ori = []
         txt_path = os.path.join(image_folder, filename + ".txt")
         if not os.path.isfile(txt_path):
@@ -533,7 +618,7 @@ def process_folder(image_folder, predictor_func, output_folder, label, save_ocr=
                 })
 
         # Filter OCR boxes
-        filtered_ocr_boxes = filter_ocr_boxes_inside_legends(raw_ocr_boxes, legend_results_ori, overlap_thresh=0.8)
+        filtered_ocr_boxes = filter_ocr_boxes_inside_legends(split_ocr_boxes, legend_results_ori, overlap_thresh=0.8)
         filtered_ocr_boxes = adjust_ocr_boxes_by_cutting_overlapping_legends(filtered_ocr_boxes, legend_results_ori)
 
         # Match
