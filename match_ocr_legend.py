@@ -14,27 +14,6 @@ text_rec_model = TextRecognition(model_name="PP-OCRv5_server_rec")
 
 text_det_model = TextDetection(model_name="PP-OCRv5_server_det")
 
-# Initialize OCR model once
-"""
-ocr_model = PaddleOCR(
-    det=True,
-    rec=True,
-    use_angle_cls=True,
-    rec_model_dir='model/PP-OCRv4_server_rec_doc_infer',
-    rec_char_dict_path='model/server_dict.txt',
-    use_space_char=True
-)
-"""
-"""
-ocr_model = PaddleOCR(
-     text_detection_model_name="PP-OCRv5_server_det",
-     text_recognition_model_name="PP-OCRv5_server_rec",
-     use_doc_orientation_classify=False,
-     use_doc_unwarping=False,
-     use_textline_orientation=False,
-)
-"""
-
 def draw_text_cn(cv2_img, text, pos, font_size=20, font_path="fonts/simhei.ttf", color=(0, 0, 0), bg_color=(255, 255, 255), draw_bg=True):
     img_pil = Image.fromarray(cv2.cvtColor(cv2_img, cv2.COLOR_BGR2RGB))
     draw = ImageDraw.Draw(img_pil)
@@ -704,7 +683,6 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--image_folder', type=str, required=True)
-    parser.add_argument('--model_path', type=str, required=True)
     parser.add_argument('--output_dir', type=str, default='results/')
     parser.add_argument('--cuda', action='store_true')
     parser.add_argument('--save_ocr', action='store_true')
