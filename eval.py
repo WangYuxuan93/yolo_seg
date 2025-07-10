@@ -19,7 +19,7 @@ def load_polygons_from_txt(txt_path, has_label=False, return_label=False):
             coords = list(map(float, parts[-8:]))
             pts = [(coords[i], coords[i + 1]) for i in range(0, 8, 2)]
             poly = Polygon(pts)
-            if poly.is_valid:
+            if poly.is_valid and poly.area > 0:
                 if return_label:
                     polys.append((poly, label))
                 else:
@@ -94,6 +94,48 @@ def compute_image_prf(pred_dir, gold_dir, iou_threshold=0.9):
 
     return dict(sorted(prf_dict.items(), key=lambda x: x[1]['f1'] if isinstance(x[1], dict) else -1, reverse=True))
 
+def compute_per_class_recall(pred_dir, gold_dir, iou_threshold=0.9):
+    label_total = Counter()
+    label_matched = Counter()
+
+    for pred_txt in glob.glob(os.path.join(pred_dir, '*.txt')):
+        name = os.path.splitext(os.path.basename(pred_txt))[0]
+        gold_txt = os.path.join(gold_dir, name, 'gold_item', 'item_box.txt')
+
+        if not os.path.exists(gold_txt):
+            continue
+
+        pred_polys = load_polygons_from_txt(pred_txt)
+        gold_labeled = load_polygons_from_txt(gold_txt, has_label=True, return_label=True)
+
+        matched_gold = set()
+
+        for pred in pred_polys:
+            max_iou = 0
+            max_idx = -1
+            for idx, (gold_poly, gold_label) in enumerate(gold_labeled):
+                if idx in matched_gold or gold_label is None:
+                    continue
+                iou = compute_union_iou([gold_poly], [pred])
+                if iou > max_iou:
+                    max_iou = iou
+                    max_idx = idx
+            if max_iou >= iou_threshold:
+                matched_gold.add(max_idx)
+
+        for idx, (gold_poly, gold_label) in enumerate(gold_labeled):
+            if gold_label is None:
+                continue
+            label_total[gold_label] += 1
+            if idx in matched_gold:
+                label_matched[gold_label] += 1
+
+    label_recall = {
+        label: round(label_matched[label] / label_total[label], 6)
+        for label in label_total
+    }
+    return label_recall
+
 def count_label_distribution(gold_dir):
     label_counter = Counter()
     for gold_txt in glob.glob(os.path.join(gold_dir, '*', 'gold_item', 'item_box.txt')):
@@ -105,7 +147,6 @@ def main(pred_dir, gold_dir, output_json_path, iou_threshold):
     iou_dict = {}
     all_pred_polys = []
     all_gold_polys = []
-
 
     for pred_txt in glob.glob(os.path.join(pred_dir, '*.txt')):
         name = os.path.splitext(os.path.basename(pred_txt))[0]
@@ -135,9 +176,14 @@ def main(pred_dir, gold_dir, output_json_path, iou_threshold):
     label_counts = count_label_distribution(gold_dir)
     sorted_iou["__label_distribution__"] = dict(label_counts)
 
+    # 加入各类别召回率
+    per_class_recall = compute_per_class_recall(pred_dir, gold_dir, iou_threshold)
+    sorted_iou["__per_class_recall__"] = per_class_recall
+
     with open(output_json_path, 'w', encoding='utf-8') as f:
         json.dump(sorted_iou, f, indent=2)
 
+    # 单图 PRF 保存
     prf_per_image = compute_image_prf(pred_dir, gold_dir, iou_threshold)
     with open(output_json_path.replace(".json", "_prf.json"), 'w', encoding='utf-8') as f:
         json.dump(prf_per_image, f, indent=2)
@@ -151,6 +197,7 @@ def main(pred_dir, gold_dir, output_json_path, iou_threshold):
         print(f"📈 图像级平均 IoU = {avg_iou:.4f}")
         print(f"🌐 全局级整体 IoU  = {global_iou:.4f}")
         print(f"📊 各类别数量分布：{dict(label_counts)}")
+        print(f"📊 各类别召回率：{per_class_recall}")
         print(f"📊 平均 Precision = {avg_precision:.4f}")
         print(f"📊 平均 Recall    = {avg_recall:.4f}")
         print(f"📊 平均 F1        = {avg_f1:.4f}")

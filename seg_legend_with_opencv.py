@@ -1272,7 +1272,7 @@ def process_image_from_array(image, image_name,
                              color_tolerance=25, duplicate_filter_size_tolerance=5,
                              duplicate_filter_color_tolerance=2, duplicate_filter_shrink_pixel_ratio=0.25,
                              duplicate_filter_color_std_max_threshold=20,
-                             use_white_ratio_filter=True,
+                             use_white_ratio_filter=False,
                              white_ratio_filter_params=None,
                              debug=False, debug_dir="."):
     """

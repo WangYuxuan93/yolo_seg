@@ -14,7 +14,7 @@ def normalize_label(s):
     return s.replace("、", "_").replace(",", "_").replace("，", "_").strip()
 
 # 路径设置
-base_dir = 'data/test0512'
+base_dir = 'data/annotation/output'
 gold_base_dir = base_dir.rstrip('/\\') + '_gold'
 os.makedirs(gold_base_dir, exist_ok=True)
 type_counter = defaultdict(int)
@@ -22,6 +22,7 @@ type_counter = defaultdict(int)
 # 遍历子文件夹
 for folder in os.listdir(base_dir):
     folder_path = os.path.join(base_dir, folder)
+    #print (folder)
     if not os.path.isdir(folder_path):
         continue
 
@@ -44,6 +45,19 @@ for folder in os.listdir(base_dir):
                 continue
             label, label_type = name.rsplit('_', 1)
             label = normalize_label(label)
+
+            # ✅ 统一为小写
+            label_type = label_type.lower()
+
+            # ✅ 修正常见拼写错误
+            if label_type == 'piont':
+                label_type = 'point'
+
+            # ✅ 限定在允许的四类，否则归为 unknown
+            if label_type not in {'line', 'point', 'poly', 'unknown'}:
+                print(f"[Warning] 非法 label_type: '{label_type}' in file '{file}', 将重置为 'unknown'")
+                label_type = 'unknown'
+
             label_to_type[label] = label_type
 
     # 准备 gold 输出路径
@@ -108,6 +122,7 @@ for folder in os.listdir(base_dir):
         label = props.get('label') or props.get('Label') or props.get('lable') or 'Unknown'
         label = normalize_label(label)
         label_type = label_mapping.get(label, "unknown")
+
         type_counter[label_type] += 1
 
         multipolygon = feature.get('geometry', {}).get('coordinates', [])
@@ -125,7 +140,7 @@ for folder in os.listdir(base_dir):
                 output_lines.append(line)
 
                 pts = np.array([[int(round(x)), int(round(y))] for x, y in ring], dtype=np.int32)
-                cv2.polylines(image_draw, [pts], isClosed=True, color=(255, 0, 0), thickness=2)
+                cv2.polylines(image_draw, [pts], isClosed=True, color=(0, 0, 255), thickness=2)
 
     # 保存图像和文本
     out_img_path = os.path.join(gold_item_dir, 'gold_item_box.png')
