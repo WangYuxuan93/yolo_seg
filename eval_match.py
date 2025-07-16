@@ -34,7 +34,7 @@ def load_boxes_from_txt(txt_path):
 
 import string
 
-def evaluate(gold_dir, pred_dir, iou_thresh=0.5, rm_punct=False):
+def evaluate(gold_dir, pred_dir, iou_thresh=0.8, match_min_sim=0.99, rm_punct=False):
     no_text_match_files = []
     box_text_mismatch_files = []
     no_text_match_files = []
@@ -92,7 +92,7 @@ def evaluate(gold_dir, pred_dir, iou_thresh=0.5, rm_punct=False):
                     pt = pt.translate(translator)
 
                 ratio = SequenceMatcher(None, gt, pt).ratio()
-                if ratio > 0.9:
+                if ratio > match_min_sim:
                     text_match_count += 1
                     any_text_matched = True
                 else:
@@ -130,14 +130,15 @@ def evaluate(gold_dir, pred_dir, iou_thresh=0.5, rm_punct=False):
     print(f"Box Precision: {precision:.4f}")
     print(f"Box Recall:    {recall:.4f}")
     print(f"Box F1:        {f1:.4f}")
-    print(f"Text Accuracy: {text_acc:.4f} (exact match > 90% similarity)")
+    print(f"Text Accuracy: {text_acc:.4f} (exact match > {match_min_sim:.2f} similarity)")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--gold_dir', type=str, required=True, help="路径：gold txt 文件夹")
     parser.add_argument('--pred_dir', type=str, required=True, help="路径：pred txt 文件夹")
-    parser.add_argument('--iou_thresh', type=float, default=0.5, help="IOU 阈值")
+    parser.add_argument('--iou_thresh', type=float, default=0.8, help="IOU 阈值")
+    parser.add_argument('--match_min_sim', type=float, default=0.99, help="IOU 阈值")
     parser.add_argument('--rm_punct', action='store_true', help="匹配文本时是否去除所有标点")
     args = parser.parse_args()
 
-    evaluate(args.gold_dir, args.pred_dir, iou_thresh=args.iou_thresh, rm_punct=args.rm_punct)
+    evaluate(args.gold_dir, args.pred_dir, iou_thresh=args.iou_thresh, match_min_sim=args.match_min_sim, rm_punct=args.rm_punct)

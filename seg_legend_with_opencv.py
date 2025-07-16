@@ -1616,7 +1616,7 @@ def main():
                 f.write(line + "\n")
         print(f"[Saved] Box coords written to: {txt_path}")
     else:
-        flag = True
+        flag = False
         if flag:
             subdirs = [d for d in os.listdir(args.input_dir) if os.path.isdir(os.path.join(args.input_dir, d))]
 
@@ -1648,7 +1648,7 @@ def main():
 
         else:
             # 获取输入目录下的所有.png文件
-            image_files = glob.glob(os.path.join(args.input_dir, '*.png'))
+            image_files = glob.glob(os.path.join(args.input_dir, '*.tif'))
 
             default_bg_color = None  # or set to (255, 255, 255)
 
@@ -1663,15 +1663,14 @@ def main():
                     image_path, output_image_path, output_txt_path,
                     global_area_min_factor=args.global_area_min_factor,
                     global_area_max_factor=args.global_area_max_factor,
-                    cluster_eps_scale=args.cluster_eps_scale,
-                    cluster_min_samples=args.cluster_min_samples,
-                    cluster_recover_size_tolerance=args.cluster_recover_size_tolerance,
-                    default_bg_color=default_bg_color,
-                    color_test_initial_expand=args.color_test_initial_expand,
-                    color_test_border_thickness=args.color_test_border_thickness,
-                    color_tolerance=args.color_tolerance,
-                    debug=args.debug, 
-                    debug_dir=args.output_dir)
+                    cluster_eps_scale=args.cluster_eps_scale, cluster_min_samples=args.cluster_min_samples,
+                    box_refine_size_tolerance=args.box_refine_size_tolerance, 
+                    cluster_recover_size_tolerance=args.cluster_recover_size_tolerance, default_bg_color=default_bg_color,
+                    color_test_initial_expand=args.color_test_initial_expand, color_test_border_thickness=args.color_test_border_thickness,
+                    color_tolerance=args.color_tolerance, duplicate_filter_size_tolerance=args.duplicate_filter_size_tolerance,
+                    duplicate_filter_color_tolerance=args.duplicate_filter_color_tolerance, duplicate_filter_shrink_pixel_ratio=args.duplicate_filter_shrink_pixel_ratio,
+                    duplicate_filter_color_std_max_threshold=args.duplicate_filter_color_std_max_threshold,
+                    debug=args.debug, debug_dir=args.output_dir)
 
 
 if __name__ == "__main__":
