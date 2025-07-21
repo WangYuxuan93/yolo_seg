@@ -1204,6 +1204,8 @@ def filter_boxes_by_inner_white_ratio(
     removed_boxes = []
     white_ratios = []
 
+    all_white_ratios = []
+
     for box in boxes:
         x_min = max(min(p[0] for p in box), 0)
         x_max = min(max(p[0] for p in box), image.shape[1])
@@ -1227,6 +1229,7 @@ def filter_boxes_by_inner_white_ratio(
         gray_roi = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
         _, binary_roi = cv2.threshold(gray_roi, white_thresh_box, 255, cv2.THRESH_BINARY)
         white_ratio = np.sum(binary_roi == 255) / (roi.shape[0] * roi.shape[1])
+        all_white_ratios.append(white_ratio)
 
         if min_white_ratio <= white_ratio <= max_white_ratio:
             removed_boxes.append(box)
@@ -1246,7 +1249,8 @@ def filter_boxes_by_inner_white_ratio(
                     fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=0.6,
                     color=(0, 0, 255), thickness=2, lineType=cv2.LINE_AA)
 
-        for box, ratio in zip(removed_boxes, white_ratios):
+        #for box, ratio in zip(removed_boxes, white_ratios):
+        for box, ratio in zip(boxes, all_white_ratios):
             box_np = np.array(box, dtype=np.int32)
             cv2.polylines(vis_image, [box_np], isClosed=True, color=(0, 0, 255), thickness=2)
 
@@ -1272,7 +1276,7 @@ def process_image_from_array(image, image_name,
                              color_tolerance=25, duplicate_filter_size_tolerance=5,
                              duplicate_filter_color_tolerance=2, duplicate_filter_shrink_pixel_ratio=0.25,
                              duplicate_filter_color_std_max_threshold=20,
-                             use_white_ratio_filter=False,
+                             use_white_ratio_filter=True,
                              white_ratio_filter_params=None,
                              debug=False, debug_dir="."):
     """
@@ -1355,7 +1359,7 @@ def process_image_from_array(image, image_name,
     if use_white_ratio_filter:
         # 默认参数字典
         default_white_ratio_params = {
-            'min_white_ratio': 0.5,
+            'min_white_ratio': 0.4,
             'max_white_ratio': 0.95,
             'white_thresh_global': 240,
             'black_thresh_global': 50,
@@ -1622,10 +1626,13 @@ def main():
 
             default_bg_color = None
             #default_bg_color = (255, 255, 255)
-
             for subdir in subdirs:
                 image_folder = os.path.join(args.input_dir, subdir, 'image')
-                tif_files = glob.glob(os.path.join(image_folder, '*.tif'))
+                image_extensions = ['*.tif', '*.tiff', '*.jpg', '*.jpeg', '*.png']
+                tif_files = []
+                for ext in image_extensions:
+                    tif_files.extend(glob.glob(os.path.join(image_folder, ext)))
+
                 if not tif_files:
                     print(f"跳过 {subdir}，没有.tif文件")
                     continue
@@ -1648,7 +1655,10 @@ def main():
 
         else:
             # 获取输入目录下的所有.png文件
-            image_files = glob.glob(os.path.join(args.input_dir, '*.tif'))
+            #image_files = glob.glob(os.path.join(args.input_dir, '*.tif'))
+            #image_files = glob.glob(os.path.join(args.input_dir, '*.png'))
+            image_files = [f for ext in ['*.png', '*.jpg', '*.jpeg', '*.tif', '*.tiff'] for f in glob.glob(os.path.join(args.input_dir, ext))]
+
 
             default_bg_color = None  # or set to (255, 255, 255)
 
