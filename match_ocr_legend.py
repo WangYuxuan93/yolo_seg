@@ -91,7 +91,7 @@ def filter_legends_with_ocr(legend_results_ori, ocr_boxes):
         # ✅ 设置匹配横向范围
         primary_max_x = lx1 + 2.0 * lw
         extended_max_x = right_neighbor_x if right_neighbor_x is not None else lx1 + 10.0 * lw
-        max_gap = 1.0 * lw
+        max_gap = 0.05 * lw
         current_right_bound = None
 
         # ✅ Step 1: 右侧主 + 扩展匹配
@@ -317,7 +317,7 @@ def adjust_ocr_boxes_by_cutting_overlapping_legends(ocr_boxes, legend_boxes, min
             lx1, ly1, lx2, ly2 = lgd['box']
 
             # OCR 完全包住 legend → 拆成左右两个 OCR 框
-            if x1 < lx1 and x2 > lx2 and y1 < ly2 and y2 > ly1:
+            if x1 < lx1 and x2 > lx2 and y1 < ly1 and y2 > ly2:
                 left_box = [x1, y1, lx1, y2]
                 right_box = [lx2, y1, x2, y2]
                 if right_box[2] - right_box[0] >= min_width:
@@ -592,7 +592,7 @@ def process_folder(image_folder, predictor_func, output_folder, label, save_ocr=
 
         # 自动拆分合并文字的 OCR 框
         split_ocr_boxes = split_all_ocr_boxes_by_projection(
-            image, raw_ocr_boxes, min_width=6, min_blank_width=6, debug=False
+            image, raw_ocr_boxes, min_width=6, min_blank_width=15, debug=False
         )
 
         legend_results_ori = []
@@ -619,7 +619,7 @@ def process_folder(image_folder, predictor_func, output_folder, label, save_ocr=
                 })
 
         # Filter OCR boxes
-        filtered_ocr_boxes = filter_ocr_boxes_inside_legends(split_ocr_boxes, legend_results_ori, overlap_thresh=0.8)
+        filtered_ocr_boxes = filter_ocr_boxes_inside_legends(split_ocr_boxes, legend_results_ori, overlap_thresh=0.6)
         filtered_ocr_boxes = adjust_ocr_boxes_by_cutting_overlapping_legends(filtered_ocr_boxes, legend_results_ori)
 
         # Match
