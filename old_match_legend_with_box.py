@@ -82,6 +82,7 @@ def draw_text_cn(cv2_img, text, pos, font_size=20, font_path="fonts/simhei.ttf",
     return cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
 
 
+
 def save_text_results(output_dir, filename_no_ext, legend_results_ori, matched_legends, ocr_boxes, recognized_texts):
     os.makedirs(output_dir, exist_ok=True)
     output_txt_path = os.path.join(output_dir, f"{filename_no_ext}.txt")
@@ -506,7 +507,7 @@ def process_folder(image_folder, predictor_func, output_folder, label, save_ocr=
 
             # ✅ 保存提取文本输出
             text_output_dir = os.path.join(output_folder, "output_text")
-            save_text_results(text_output_dir, filename, matched_legends, filtered_ocr_boxes, recognized_texts)
+            save_text_results(text_output_dir, filename, legend_results_ori, matched_legends, filtered_ocr_boxes, recognized_texts)
 
 
 def main(args):
