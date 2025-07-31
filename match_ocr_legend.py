@@ -37,22 +37,29 @@ def draw_text_cn(cv2_img, text, pos, font_size=20, font_path="fonts/simhei.ttf",
     draw.text(pos, text, font=font, fill=color[::-1])  # BGR -> RGB
     return cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
 
-
-def save_text_results(output_dir, filename_no_ext, matched_legends, ocr_boxes, recognized_texts):
+def save_text_results(output_dir, filename_no_ext, legend_results_ori, matched_legends, ocr_boxes, recognized_texts):
     os.makedirs(output_dir, exist_ok=True)
     output_txt_path = os.path.join(output_dir, f"{filename_no_ext}.txt")
     lines = []
 
+    # 建立 legend box 映射表（用于按原始顺序查找匹配）
+    box_to_matched_indices = {}
     for lgd in matched_legends:
+        box_key = tuple(lgd['box'])  # 使用元组作为key
+        box_to_matched_indices[box_key] = lgd.get('matched_indices', [])
+
+    for lgd in legend_results_ori:
+        x1, y1, x2, y2 = lgd['box']
+        box_key = tuple([x1, y1, x2, y2])
+        matched_indices = box_to_matched_indices.get(box_key, [])
         collected_texts = []
-        for idx in lgd['matched_indices']:
+
+        for idx in matched_indices:
             text, score = recognized_texts.get(idx, ('', 0.0))
             if text.strip():
                 collected_texts.append(text.strip())
-        if not collected_texts:
-            continue
-        merged_text = ' '.join(collected_texts).strip()
-        x1, y1, x2, y2 = lgd['box']
+
+        merged_text = ' '.join(collected_texts).strip() if collected_texts else 'NULL'
         lines.append(f"{merged_text} {x1} {y1} {x2} {y2}")
 
     with open(output_txt_path, 'w', encoding='utf-8') as f:
@@ -518,26 +525,6 @@ def crop_quad(image, quad):
     warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight))
     return warped
 
-"""
-def recognize_text_from_indices(image, ocr_boxes, indices):
-    result_dict = {}
-    for idx in indices:
-        box = ocr_boxes[idx]
-        quad = box[:4]
-        cropped = crop_quad(image, quad)
-
-        results = text_rec_model.predict(cropped)
-        #print (results)
-        if results and isinstance(results[0], dict):
-            rec_text = results[0].get('rec_text', '')
-            rec_score = results[0].get('rec_score', 0.0)
-        else:
-            rec_text, rec_score = '', 0.0
-
-        result_dict[idx] = (rec_text, rec_score)
-    return result_dict
-"""
-
 def recognize_text_from_indices(image, ocr_boxes, indices, batch_size=32):
     result_dict = {}
 
@@ -649,37 +636,12 @@ def process_folder(image_folder, predictor_func, output_folder, label, save_ocr=
 
             # ✅ 保存提取文本输出
             text_output_dir = os.path.join(output_folder, "output_text")
-            save_text_results(text_output_dir, filename, matched_legends, filtered_ocr_boxes, recognized_texts)
+            save_text_results(text_output_dir, filename, legend_results_ori, matched_legends, filtered_ocr_boxes, recognized_texts)
 
 
 def main(args):
     print("cuda:", args.cuda)
     print("Using PaddleOCR for OCR box + text detection...")
-    """
-    def paddleocr_detector(image):
-        results = ocr_model.ocr(image)
-        
-        # results 是一个列表（可能是多页），我们只处理第一页
-        if not results or not isinstance(results[0], dict):
-            return [], {}
-
-        res_dict = results[0]
-        polys = res_dict['dt_polys']           # (N, 4, 2)
-        #texts = res_dict['rec_texts']
-        #scores = res_dict['rec_scores']
-
-        boxes = []
-        #recognized_texts = {}
-
-        for idx, poly in enumerate(polys):
-            # 转换为整数格式 + dummy text
-            quad = [[int(pt[0]), int(pt[1])] for pt in poly]
-            #quad.append(text)  # 第五个元素是文本，用于兼容旧格式
-            boxes.append(quad)
-            #recognized_texts[idx] = (text, float(score))
-
-        return boxes#, recognized_texts
-    """
     
     def paddleocr_detector(image):
         results = text_det_model.predict(image, batch_size=1)
