@@ -37,7 +37,8 @@ import string
 def evaluate(gold_dir, pred_dir, iou_thresh=0.8, match_min_sim=0.99, rm_punct=False):
     no_text_match_files = []
     box_text_mismatch_files = []
-    no_text_match_files = []
+    low_precision_files = []
+
     all_tp = 0
     all_fp = 0
     all_fn = 0
@@ -78,12 +79,11 @@ def evaluate(gold_dir, pred_dir, iou_thresh=0.8, match_min_sim=0.99, rm_punct=Fa
             if best_pi >= 0:
                 matched_gold.add(gi)
                 matched_pred.add(best_pi)
-                all_tp += 1
                 # 比较文本
                 ptext, _ = pred_boxes[best_pi]
                 gt = gtext.replace(' ', '')
                 pt = ptext.replace(' ', '')
-                
+
                 if rm_punct:
                     chinese_punct = "！？。；，、（）【】《》“”‘’"
                     all_punct = string.punctuation + chinese_punct
@@ -99,9 +99,26 @@ def evaluate(gold_dir, pred_dir, iou_thresh=0.8, match_min_sim=0.99, rm_punct=Fa
                     text_mismatch_found = True
                     mismatched_text_pairs.append((gtext, ptext))
             else:
-                all_fn += 1
+                pass  # FN handled below
 
-        all_fp += len(pred_boxes) - len(matched_pred)
+        # === 单文件级指标统计 ===
+        tp = len(matched_gold)
+        fp = len(pred_boxes) - len(matched_pred)
+        fn = len(gold_boxes) - len(matched_gold)
+
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+
+        if precision < 1:
+            print(f"[Low P] {fname} - P={precision:.3f}, R={recall:.3f}, F1={f1:.3f}")
+            low_precision_files.append(fname)
+            continue
+
+        # === 全局统计 ===
+        all_tp += tp
+        all_fp += fp
+        all_fn += fn
         all_text_matches += text_match_count
         all_text_total += len(matched_gold)
 
@@ -109,28 +126,19 @@ def evaluate(gold_dir, pred_dir, iou_thresh=0.8, match_min_sim=0.99, rm_punct=Fa
             no_text_match_files.append(fname)
         if text_mismatch_found:
             box_text_mismatch_files.append(fname)
-            print(f"[✗] 文本不匹配示例（{fname}）：")
-            for gtext, ptext in mismatched_text_pairs:
-                print(f"  GT: {gtext} | Pred: {ptext}")
 
+    # === 全局指标输出 ===
     precision = all_tp / (all_tp + all_fp) if (all_tp + all_fp) > 0 else 0.0
     recall = all_tp / (all_tp + all_fn) if (all_tp + all_fn) > 0 else 0.0
     f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
     text_acc = all_text_matches / all_text_total if all_text_total > 0 else 0.0
 
-    print("[Evaluation Results]")
-    if box_text_mismatch_files:
-        print("[!] 以下文件中有 box 匹配但文本错误：")
-        for fname in box_text_mismatch_files:
-            print(f" - {fname}")
-    if no_text_match_files:
-        print(f"[!] 以下文件没有匹配到任何文本：")
-        for fname in no_text_match_files:
-            print(f" - {fname}")
+    print(f"\n[Overall Evaluation Results]")
     print(f"Box Precision: {precision:.4f}")
     print(f"Box Recall:    {recall:.4f}")
     print(f"Box F1:        {f1:.4f}")
     print(f"Text Accuracy: {text_acc:.4f} (exact match > {match_min_sim:.2f} similarity)")
+    
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()

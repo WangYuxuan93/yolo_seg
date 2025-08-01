@@ -9,11 +9,6 @@ from PIL import ImageFont, ImageDraw, Image
 
 from paddleocr import TextRecognition, TextDetection
 
-# 初始化 PaddleOCR 文本识别模型（v5新API）
-text_rec_model = TextRecognition(model_name="PP-OCRv5_server_rec")
-
-text_det_model = TextDetection(model_name="PP-OCRv5_server_det")
-
 def draw_text_cn(cv2_img, text, pos, font_size=20, font_path="fonts/simhei.ttf", color=(0, 0, 0), bg_color=(255, 255, 255), draw_bg=True):
     img_pil = Image.fromarray(cv2.cvtColor(cv2_img, cv2.COLOR_BGR2RGB))
     draw = ImageDraw.Draw(img_pil)
@@ -525,33 +520,6 @@ def crop_quad(image, quad):
     warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight))
     return warped
 
-def recognize_text_from_indices(image, ocr_boxes, indices, batch_size=32):
-    result_dict = {}
-
-    crops = []
-    idx_list = []
-
-    for idx in indices:
-        box = ocr_boxes[idx]
-        quad = box[:4]
-        cropped = crop_quad(image, quad)
-        crops.append(cropped)
-        idx_list.append(idx)
-
-    # ⏩ 批量识别，显式传入 batch_size
-    batch_results = text_rec_model.predict(crops, batch_size=batch_size)
-
-    for i, result in enumerate(batch_results):
-        idx = idx_list[i]
-        if result and isinstance(result, dict):
-            rec_text = result.get('rec_text', '')
-            rec_score = result.get('rec_score', 0.0)
-        else:
-            rec_text, rec_score = '', 0.0
-        result_dict[idx] = (rec_text, rec_score)
-
-    return result_dict
-
 def load_image_as_opencv_matrix(local_filepath):
     with open(local_filepath, 'rb') as f:
         file_bytes = f.read()
@@ -564,7 +532,7 @@ def draw_and_save(image, save_path):
     print(f"Saved visualization to {save_path}")
 
 
-def process_folder(image_folder, predictor_func, output_folder, label, save_ocr=True):
+def process_folder(image_folder, matcher, output_folder, label, save_ocr=True):
     image_list = sorted([
         os.path.join(image_folder, f) for f in os.listdir(image_folder)
         if f.lower().endswith(('.jpg', '.jpeg', '.png', '.tif'))
@@ -574,13 +542,6 @@ def process_folder(image_folder, predictor_func, output_folder, label, save_ocr=
     for image_path in image_list:
         image = load_image_as_opencv_matrix(image_path)
         filename = os.path.splitext(os.path.basename(image_path))[0]
-
-        raw_ocr_boxes = predictor_func(image)
-
-        # 自动拆分合并文字的 OCR 框
-        split_ocr_boxes = split_all_ocr_boxes_by_projection(
-            image, raw_ocr_boxes, min_width=6, min_blank_width=15, debug=False
-        )
 
         legend_results_ori = []
         txt_path = os.path.join(image_folder, filename + ".txt")
@@ -604,21 +565,8 @@ def process_folder(image_folder, predictor_func, output_folder, label, save_ocr=
                     'polygons': [[[]]],
                     'mappingArea': ''
                 })
-
-        # Filter OCR boxes
-        filtered_ocr_boxes = filter_ocr_boxes_inside_legends(split_ocr_boxes, legend_results_ori, overlap_thresh=0.6)
-        filtered_ocr_boxes = adjust_ocr_boxes_by_cutting_overlapping_legends(filtered_ocr_boxes, legend_results_ori)
-
-        # Match
-        matched_legends = filter_legends_with_ocr(legend_results_ori, filtered_ocr_boxes)
-        matched_indices = set()
-        for lgd in matched_legends:
-            matched_indices.update(lgd['matched_indices'])
-
-        for lgd in matched_legends:
-            lgd['matched_indices'] = sort_indices_by_reading_order(lgd['matched_indices'], filtered_ocr_boxes)
-
-        recognized_texts = recognize_text_from_indices(image, filtered_ocr_boxes, matched_indices)
+            
+        matched_legends, filtered_ocr_boxes, recognized_texts = matcher.match(image, legend_results_ori)
 
         if output_folder:
             os.makedirs(output_folder, exist_ok=True)
@@ -639,12 +587,14 @@ def process_folder(image_folder, predictor_func, output_folder, label, save_ocr=
             save_text_results(text_output_dir, filename, legend_results_ori, matched_legends, filtered_ocr_boxes, recognized_texts)
 
 
-def main(args):
-    print("cuda:", args.cuda)
-    print("Using PaddleOCR for OCR box + text detection...")
-    
-    def paddleocr_detector(image):
-        results = text_det_model.predict(image, batch_size=1)
+class OcrLegendMatcher(object):
+    def __init__(self):
+        # 初始化 PaddleOCR 文本识别模型（v5新API）
+        self.text_rec_model = TextRecognition(model_name="PP-OCRv5_server_rec")
+        self.text_det_model = TextDetection(model_name="PP-OCRv5_server_det")
+
+    def paddleocr_detector(self, image):
+        results = self.text_det_model.predict(image, batch_size=1)
 
         if not results or not isinstance(results[0], dict):
             return []
@@ -657,12 +607,68 @@ def main(args):
             boxes.append(quad)
 
         return boxes
+    
+    def recognize_text_from_indices(self, image, ocr_boxes, indices, batch_size=32):
+        result_dict = {}
 
-    predictor_func = paddleocr_detector
+        crops = []
+        idx_list = []
+
+        for idx in indices:
+            box = ocr_boxes[idx]
+            quad = box[:4]
+            cropped = crop_quad(image, quad)
+            crops.append(cropped)
+            idx_list.append(idx)
+
+        # ⏩ 批量识别，显式传入 batch_size
+        batch_results = self.text_rec_model.predict(crops, batch_size=batch_size)
+
+        for i, result in enumerate(batch_results):
+            idx = idx_list[i]
+            if result and isinstance(result, dict):
+                rec_text = result.get('rec_text', '')
+                rec_score = result.get('rec_score', 0.0)
+            else:
+                rec_text, rec_score = '', 0.0
+            result_dict[idx] = (rec_text, rec_score)
+
+        return result_dict
+    
+    def match(self, image, legend_results_ori):
+        raw_ocr_boxes = self.paddleocr_detector(image)
+
+        split_ocr_boxes = split_all_ocr_boxes_by_projection(
+            image, raw_ocr_boxes, min_width=6, min_blank_width=15, debug=False
+        )
+
+        # Filter OCR boxes
+        filtered_ocr_boxes = filter_ocr_boxes_inside_legends(split_ocr_boxes, legend_results_ori, overlap_thresh=0.6)
+        filtered_ocr_boxes = adjust_ocr_boxes_by_cutting_overlapping_legends(filtered_ocr_boxes, legend_results_ori)
+
+        # Match
+        matched_legends = filter_legends_with_ocr(legend_results_ori, filtered_ocr_boxes)
+        matched_indices = set()
+        for lgd in matched_legends:
+            matched_indices.update(lgd['matched_indices'])
+
+        for lgd in matched_legends:
+            lgd['matched_indices'] = sort_indices_by_reading_order(lgd['matched_indices'], filtered_ocr_boxes)
+
+        recognized_texts = self.recognize_text_from_indices(image, filtered_ocr_boxes, matched_indices)
+
+        return matched_legends, filtered_ocr_boxes, recognized_texts
+
+
+def main(args):
+    print("cuda:", args.cuda)
+    print("Using PaddleOCR for OCR box + text detection...")
+
+    matcher = OcrLegendMatcher()
 
     process_folder(
         image_folder=args.image_folder,
-        predictor_func=predictor_func,
+        matcher=matcher,
         output_folder=args.output_dir,
         label='mainmap',
         save_ocr=args.save_ocr
