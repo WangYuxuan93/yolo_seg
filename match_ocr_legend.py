@@ -1,6 +1,7 @@
 import os
 import argparse
 import cv2
+import re
 import numpy as np
 from io import BytesIO
 from paddleocr import PaddleOCR
@@ -429,7 +430,11 @@ def visualize_matches(image, legend_results_ori, matched_legends, ocr_boxes, rec
             quad = ocr_boxes[idx][:4]
             text, score = recognized_texts.get(idx, ('', 0.0))
             if text.strip():
-                collected_texts.append(text.strip())
+                text_clean = text.strip()
+                # ⛔️ 跳过经纬度格式（如 120°56'34"）
+                if re.search(r'\d+°\d+\'\d+"', text_clean):
+                    continue
+                collected_texts.append(text_clean)
 
             xs = [pt[0] for pt in quad]
             ys = [pt[1] for pt in quad]

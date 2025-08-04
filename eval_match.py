@@ -2,17 +2,15 @@ import os
 import argparse
 from difflib import SequenceMatcher
 from shapely.geometry import box as shapely_box
+import string
 
 def iou(boxA, boxB):
     xa1, ya1, xa2, ya2 = boxA
     xb1, yb1, xb2, yb2 = boxB
-
     boxA_shapely = shapely_box(xa1, ya1, xa2, ya2)
     boxB_shapely = shapely_box(xb1, yb1, xb2, yb2)
-
     inter = boxA_shapely.intersection(boxB_shapely).area
     union = boxA_shapely.union(boxB_shapely).area
-
     return inter / union if union != 0 else 0
 
 def load_boxes_from_txt(txt_path):
@@ -32,9 +30,7 @@ def load_boxes_from_txt(txt_path):
             boxes.append((text, coords))
     return boxes
 
-import string
-
-def evaluate(gold_dir, pred_dir, iou_thresh=0.8, match_min_sim=0.99, rm_punct=False):
+def evaluate(gold_dir, pred_dir, iou_thresh=0.8, match_min_sim=0.99, rm_punct=False, show_mismatch_text=False):
     no_text_match_files = []
     box_text_mismatch_files = []
     low_precision_files = []
@@ -79,7 +75,6 @@ def evaluate(gold_dir, pred_dir, iou_thresh=0.8, match_min_sim=0.99, rm_punct=Fa
             if best_pi >= 0:
                 matched_gold.add(gi)
                 matched_pred.add(best_pi)
-                # 比较文本
                 ptext, _ = pred_boxes[best_pi]
                 gt = gtext.replace(' ', '')
                 pt = ptext.replace(' ', '')
@@ -115,17 +110,21 @@ def evaluate(gold_dir, pred_dir, iou_thresh=0.8, match_min_sim=0.99, rm_punct=Fa
             low_precision_files.append(fname)
             continue
 
+        if not any_text_matched:
+            no_text_match_files.append(fname)
+        if text_mismatch_found:
+            box_text_mismatch_files.append(fname)
+            if show_mismatch_text:
+                print(f"[Mismatch Text in {fname}]")
+                for gt, pt in mismatched_text_pairs:
+                    print(f"  GT: {gt} | Pred: {pt}")
+
         # === 全局统计 ===
         all_tp += tp
         all_fp += fp
         all_fn += fn
         all_text_matches += text_match_count
         all_text_total += len(matched_gold)
-
-        if not any_text_matched:
-            no_text_match_files.append(fname)
-        if text_mismatch_found:
-            box_text_mismatch_files.append(fname)
 
     # === 全局指标输出 ===
     precision = all_tp / (all_tp + all_fp) if (all_tp + all_fp) > 0 else 0.0
@@ -138,15 +137,22 @@ def evaluate(gold_dir, pred_dir, iou_thresh=0.8, match_min_sim=0.99, rm_punct=Fa
     print(f"Box Recall:    {recall:.4f}")
     print(f"Box F1:        {f1:.4f}")
     print(f"Text Accuracy: {text_acc:.4f} (exact match > {match_min_sim:.2f} similarity)")
-    
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--gold_dir', type=str, required=True, help="路径：gold txt 文件夹")
     parser.add_argument('--pred_dir', type=str, required=True, help="路径：pred txt 文件夹")
     parser.add_argument('--iou_thresh', type=float, default=0.8, help="IOU 阈值")
-    parser.add_argument('--match_min_sim', type=float, default=0.99, help="IOU 阈值")
+    parser.add_argument('--match_min_sim', type=float, default=0.99, help="文本相似度阈值")
     parser.add_argument('--rm_punct', action='store_true', help="匹配文本时是否去除所有标点")
+    parser.add_argument('--show_mismatch_text', action='store_true', help="是否显示文本不匹配的对")
     args = parser.parse_args()
 
-    evaluate(args.gold_dir, args.pred_dir, iou_thresh=args.iou_thresh, match_min_sim=args.match_min_sim, rm_punct=args.rm_punct)
+    evaluate(
+        args.gold_dir,
+        args.pred_dir,
+        iou_thresh=args.iou_thresh,
+        match_min_sim=args.match_min_sim,
+        rm_punct=args.rm_punct,
+        show_mismatch_text=args.show_mismatch_text
+    )
