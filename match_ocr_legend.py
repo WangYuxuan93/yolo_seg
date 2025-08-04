@@ -128,7 +128,7 @@ def filter_legends_with_ocr(legend_results_ori, ocr_boxes):
                 ox = (x1 + x2) * 0.5
                 oy = (y1 + y2) * 0.5
 
-                is_bottom = lx1 - 0.2 * lw < ox < lx2 + 0.2 * lw and ly2 <= oy <= ly2 + 1.5 * lh
+                is_bottom = lx1 - 0.5 * lw < ox < lx2 + 0.5 * lw and ly2 <= oy <= ly2 + 1.5 * lh
                 if is_bottom:
                     matched_indices.append(idx)
 
