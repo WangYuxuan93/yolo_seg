@@ -717,6 +717,35 @@ class OcrLegendMatcher(object):
         )
 
         return matched_legends, filtered_ocr_boxes, recognized_texts, legend_texts
+    
+    def detect_texts_for_legend_boxes(self, image, legend_boxes):
+        """
+        输入 legend box 列表，返回每个 box 匹配到的文本。
+
+        Args:
+            image: 输入图像（OpenCV BGR 格式）
+            legend_boxes: List of [x1, y1, x2, y2]
+
+        Returns:
+            legend_texts: List of (box, merged_text)
+        """
+        # 构造 legend_results_ori 结构
+        legend_results_ori = []
+        for box in legend_boxes:
+            x1, y1, x2, y2 = box
+            legend_results_ori.append({
+                'box': [x1, y1, x2, y2],
+                'bgr': [0, 0, 0],
+                'mask': None,
+                'color': '',
+                'polygons': [[[]]],
+                'mappingArea': ''
+            })
+
+        # 调用之前封装的匹配 + 文本提取函数
+        _, _, _, legend_texts = self.match_and_extract_texts(image, legend_results_ori)
+
+        return legend_texts
 
 
 
