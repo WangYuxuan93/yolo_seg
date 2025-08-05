@@ -13,6 +13,23 @@ def iou(boxA, boxB):
     union = boxA_shapely.union(boxB_shapely).area
     return inter / union if union != 0 else 0
 
+def normalize_text(text):
+    replacements = {
+        'Ⅰ': 'I',
+        'Ⅱ': 'II',
+        'Ⅲ': 'III',
+        'Ⅳ': 'IV',
+        'Ⅴ': 'V',
+        'Ⅵ': 'VI',
+        'Ⅶ': 'VII',
+        'Ⅷ': 'VIII',
+        'Ⅸ': 'IX',
+        'Ⅹ': 'X',
+    }
+    for k, v in replacements.items():
+        text = text.replace(k, v)
+    return text
+
 def load_boxes_from_txt(txt_path):
     boxes = []
     with open(txt_path, 'r', encoding='utf-8') as f:
@@ -76,8 +93,10 @@ def evaluate(gold_dir, pred_dir, iou_thresh=0.8, match_min_sim=0.99, rm_punct=Fa
                 matched_gold.add(gi)
                 matched_pred.add(best_pi)
                 ptext, _ = pred_boxes[best_pi]
-                gt = gtext.replace(' ', '')
-                pt = ptext.replace(' ', '')
+                #gt = gtext.replace(' ', '')
+                #pt = ptext.replace(' ', '')
+                gt = normalize_text(gtext.replace(' ', ''))
+                pt = normalize_text(ptext.replace(' ', ''))
 
                 if rm_punct:
                     chinese_punct = "！？。；，、（）【】《》“”‘’"

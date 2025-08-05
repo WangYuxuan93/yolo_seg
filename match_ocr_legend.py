@@ -129,7 +129,7 @@ def filter_legends_with_ocr(legend_results_ori, ocr_boxes):
                 ox = (x1 + x2) * 0.5
                 oy = (y1 + y2) * 0.5
 
-                is_bottom = lx1 - 0.5 * lw < ox < lx2 + 0.5 * lw and ly2 <= oy <= ly2 + 1.5 * lh
+                is_bottom = lx1 - 0.4 * lw < ox < lx2 + 0.4 * lw and ly2 <= oy <= ly2 + 1.5 * lh
                 if is_bottom:
                     matched_indices.append(idx)
 
@@ -394,7 +394,7 @@ def sort_indices_by_reading_order(indices, ocr_boxes, line_tolerance_ratio=0.6):
 
     return sorted_indices
 
-def visualize_matches(image, legend_results_ori, matched_legends, ocr_boxes, recognized_texts, save_subdir=None):
+def visualize_matches(image, legend_results_ori, matched_legends, ocr_boxes, recognized_texts, save_subdir=None, legend_texts=None):
     import os
     overlay = image.copy()
     raw_image = image.copy()  # ✅ 用于截图，避免画框干扰
@@ -407,18 +407,23 @@ def visualize_matches(image, legend_results_ori, matched_legends, ocr_boxes, rec
     font_color = (0, 0, 0)  # 黑色文字
     bg_color = (200, 255, 200)  # 浅绿色背景框
 
-    # ✅ 若提供保存子目录，则创建
     if save_subdir:
         os.makedirs(save_subdir, exist_ok=True)
-        box_save_counter = 0  # 顺序编号截图
+        box_save_counter = 0
 
-    # Draw all legend boxes (green)
+    # ✅ Draw all legend boxes (green)
     for lgd in legend_results_ori:
         x1, y1, x2, y2 = lgd['box']
         cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 255, 0), -1)
         cv2.rectangle(image, (x1, y1), (x2, y2), (0, 200, 0), 2)
 
-    # Draw matched OCR boxes (red) and connect lines
+    # ✅ If legend_texts is provided, build a dict for quick lookup
+    legend_text_dict = {}
+    if legend_texts:
+        for box, text in legend_texts:
+            legend_text_dict[tuple(box)] = text
+
+    # ✅ Draw matched OCR boxes and legend connections
     for lgd in matched_legends:
         lx1, ly1, lx2, ly2 = lgd['box']
         legend_center = ((lx1 + lx2) // 2, (ly1 + ly2) // 2)
@@ -429,13 +434,14 @@ def visualize_matches(image, legend_results_ori, matched_legends, ocr_boxes, rec
             matched_ocr_set.add(idx)
             quad = ocr_boxes[idx][:4]
             text, score = recognized_texts.get(idx, ('', 0.0))
-            if text.strip():
-                text_clean = text.strip()
-                # ⛔️ 跳过经纬度格式（如 120°56'34"）
-                if re.search(r'\d+°\d+\'\d+"', text_clean):
-                    continue
-                collected_texts.append(text_clean)
+            text_clean = text.strip()
 
+            # ⛔️ 跳过经纬度文本
+            if re.search(r'\d+°\d+\'\d+"', text_clean):
+                continue
+            collected_texts.append(text_clean)
+
+            # draw OCR box
             xs = [pt[0] for pt in quad]
             ys = [pt[1] for pt in quad]
             x1, y1 = min(xs), min(ys)
@@ -446,44 +452,41 @@ def visualize_matches(image, legend_results_ori, matched_legends, ocr_boxes, rec
             cv2.rectangle(image, (x1, y1), (x2, y2), (0, 0, 180), 2)
             cv2.line(image, legend_center, (ox, oy), (0, 0, 200), 2)
 
-            # ✅ 保存截图 + 添加上方文字（使用 raw_image）
+            # ✅ OCR截图保存
             if save_subdir:
                 cropped = crop_quad(raw_image, quad)
                 h, w = cropped.shape[:2]
-                space = 25  # 留出空白区域高度
-                canvas = np.ones((h + space, w, 3), dtype=np.uint8) * 255  # 白底
+                space = 25
+                canvas = np.ones((h + space, w, 3), dtype=np.uint8) * 255
                 canvas[space:, :] = cropped
-                label = text.strip()
-                #cv2.putText(canvas, label, (2, space - 5), font, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
-                #canvas = draw_text_cn(canvas, label, (2, 2), font_size=18, font_path='fonts/simhei.ttf', color=(0, 0, 0))
                 canvas = draw_text_cn(
-                    canvas, label, (2, 2),
+                    canvas, text_clean, (2, 2),
                     font_size=14,
                     font_path='fonts/simhei.ttf',
                     color=(0, 0, 0),
                     bg_color=(255, 255, 255),
                     draw_bg=True
                 )
-                
                 save_path = os.path.join(save_subdir, f"{box_save_counter:03d}.jpg")
                 cv2.imwrite(save_path, canvas)
                 box_save_counter += 1
 
-        # 显示合并后的识别文本
-        if collected_texts:
-            text_to_show = ' '.join(collected_texts)
-            tx, ty = lx1, ly1 - 5
-            #image = draw_text_cn(image, text_to_show, (tx, ty - 20), font_size=20, font_path='fonts/simhei.ttf', color=(0, 0, 0))
-            image = draw_text_cn(
-                        image, text_to_show, (tx, ty - 20),
-                        font_size=14,
-                        font_path='fonts/simhei.ttf',
-                        color=(0, 0, 0),
-                        bg_color=(255, 255, 200),
-                        draw_bg=True
-                    )
+        # ✅ 显示文字：用外部提供的 legend_texts（优先）或拼接的 collected_texts
+        box_key = tuple(lgd['box'])
+        text_to_show = legend_text_dict.get(box_key, ' '.join(collected_texts))
 
-    # Draw unmatched OCR boxes (blue)
+        if text_to_show.strip():
+            tx, ty = lx1, ly1 - 5
+            image = draw_text_cn(
+                image, text_to_show, (tx, ty - 20),
+                font_size=14,
+                font_path='fonts/simhei.ttf',
+                color=(0, 0, 0),
+                bg_color=(255, 255, 200),
+                draw_bg=True
+            )
+
+    # ✅ Draw unmatched OCR boxes (blue)
     for idx, occ in enumerate(ocr_boxes):
         if idx in matched_ocr_set:
             continue
@@ -571,7 +574,9 @@ def process_folder(image_folder, matcher, output_folder, label, save_ocr=True):
                     'mappingArea': ''
                 })
             
-        matched_legends, filtered_ocr_boxes, recognized_texts = matcher.match(image, legend_results_ori)
+        #matched_legends, filtered_ocr_boxes, recognized_texts = matcher.match(image, legend_results_ori)
+
+        matched_legends, filtered_ocr_boxes, recognized_texts, legend_texts = matcher.match_and_extract_texts(image, legend_results_ori)
 
         if output_folder:
             os.makedirs(output_folder, exist_ok=True)
@@ -583,8 +588,10 @@ def process_folder(image_folder, matcher, output_folder, label, save_ocr=True):
                 matched_legends,
                 filtered_ocr_boxes,
                 recognized_texts,
-                save_subdir=ocr_subfolder if save_ocr else None
+                save_subdir=ocr_subfolder if save_ocr else None,
+                legend_texts=legend_texts  # ✅ 传入你提前提取好的文本
             )
+            
             draw_and_save(vis, out_path)
 
             # ✅ 保存提取文本输出
@@ -663,6 +670,54 @@ class OcrLegendMatcher(object):
         recognized_texts = self.recognize_text_from_indices(image, filtered_ocr_boxes, matched_indices)
 
         return matched_legends, filtered_ocr_boxes, recognized_texts
+    
+
+    def extract_texts_from_matched_legends(self, matched_legends, ocr_boxes, recognized_texts):
+        """
+        从匹配结果中提取 legend box 与对应合并识别文本。
+
+        Returns:
+            legend_texts: List of (legend_box, text)
+        """
+        legend_texts = []
+
+        for lgd in matched_legends:
+            box = lgd['box']
+            text_list = []
+
+            for idx in lgd['matched_indices']:
+                text, score = recognized_texts.get(idx, ('', 0.0))
+                text_clean = text.strip()
+                if not text_clean:
+                    continue
+                # ⛔️ 跳过经纬度文本
+                if re.search(r'\d+°\d+[′\'](\d+[″\"])?[NSEW]?', text_clean):
+                    continue
+                text_list.append(text_clean)
+
+            merged_text = ' '.join(text_list)
+            legend_texts.append((box, merged_text))
+
+        return legend_texts
+    
+    def match_and_extract_texts(self, image, legend_results_ori):
+        """
+        执行图例匹配和文本提取的完整流程。
+
+        Returns:
+            matched_legends: List[dict] 含 matched_indices
+            filtered_ocr_boxes: List of quad points
+            recognized_texts: Dict[int, (text, score)]
+            legend_texts: List[Tuple[legend_box, merged_text]]
+        """
+        matched_legends, filtered_ocr_boxes, recognized_texts = self.match(image, legend_results_ori)
+        
+        legend_texts = self.extract_texts_from_matched_legends(
+            matched_legends, filtered_ocr_boxes, recognized_texts
+        )
+
+        return matched_legends, filtered_ocr_boxes, recognized_texts, legend_texts
+
 
 
 def main(args):
